@@ -8,7 +8,6 @@ use serde::{Serialize, Deserialize};
 
 const IN_FILE: &str = "db/in.csv";
 
-// Keep the original structures
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Notes {
     content: String,
@@ -43,7 +42,6 @@ struct Microfiche {
     categories: HashMap<String, Category>,
 }
 
-// CSV Row structure
 #[derive(Debug, Serialize, Deserialize)]
 struct FicheRow {
     #[serde(rename = "Category")]
@@ -65,14 +63,11 @@ impl Microfiche {
         }
     }
     
-    // Export to CSV
     fn to_csv(&self, path: &str) -> Result<(), Box<dyn Error>> {
         let mut wtr = Writer::from_path(path)?;
         
-        // Write header
         wtr.write_record(&["Category", "Subcategory", "Concept", "KeyDetail", "Note"])?;
         
-        // Iterate through hierarchy
         for (cat_name, category) in &self.categories {
             for subcat in &category.subcategories {
                 for concept in &subcat.concepts {
@@ -95,7 +90,6 @@ impl Microfiche {
         Ok(())
     }
     
-    // Import from CSV
     fn from_csv(path: &str) -> Result<Self, Box<dyn Error>> {
         let mut fiche = Microfiche::new();
         let mut rdr = Reader::from_path(path)?;
@@ -108,7 +102,6 @@ impl Microfiche {
         Ok(fiche)
     }
     
-    // Add a single CSV row to the structure
     fn add_row(&mut self, row: FicheRow) {
         let category = self.categories.entry(row.category.clone())
             .or_insert_with(|| Category {
@@ -116,7 +109,6 @@ impl Microfiche {
                 subcategories: Vec::new(),
             });
         
-        // Fix: Check if subcategory exists first
         if !category.subcategories.iter().any(|s| s.name == row.subcategory) {
             category.subcategories.push(Subcategory {
                 name: row.subcategory.clone(),
@@ -127,7 +119,6 @@ impl Microfiche {
             .find(|s| s.name == row.subcategory)
             .unwrap();
         
-        // Fix: Check if concept exists first
         if !subcat.concepts.iter().any(|c| c.name == row.concept) {
             subcat.concepts.push(Concept {
                 name: row.concept.clone(),
@@ -138,7 +129,6 @@ impl Microfiche {
             .find(|c| c.name == row.concept)
             .unwrap();
         
-        // Fix: Check if detail exists first
         if !concept.details.iter().any(|d| d.name == row.key_detail) {
             concept.details.push(KeyDetails {
                 name: row.key_detail.clone(),
@@ -154,7 +144,6 @@ impl Microfiche {
         });
     }
     
-    // Validate CSV for consistency
     fn validate_csv(path: &str) -> Result<Vec<String>, Box<dyn Error>> {
         let mut rdr = Reader::from_path(path)?;
         let mut warnings = Vec::new();
@@ -165,13 +154,11 @@ impl Microfiche {
             line_num += 1;
             let row: FicheRow = result?;
             
-            // Check for empty fields
             if row.category.is_empty() || row.subcategory.is_empty() || 
                row.concept.is_empty() || row.key_detail.is_empty() {
                 warnings.push(format!("Line {}: Contains empty fields", line_num));
             }
             
-            // Check for duplicate exact entries
             let path = format!("{}.{}.{}.{}: {}", 
                 row.category, row.subcategory, row.concept, row.key_detail, row.note);
             if seen_paths.contains(&path) {
@@ -179,7 +166,6 @@ impl Microfiche {
             }
             seen_paths.insert(path);
             
-            // Check for suspicious characters that might break CSV
             if row.note.contains('\n') || row.note.contains('\r') {
                 warnings.push(format!("Line {}: Note contains newline characters", line_num));
             }
@@ -188,7 +174,6 @@ impl Microfiche {
         Ok(warnings)
     }
     
-    // Generate detailed statistics
     fn stats(&self) -> HashMap<String, usize> {
         let mut stats = HashMap::new();
         let mut total_subcats = 0;
@@ -222,7 +207,6 @@ impl Microfiche {
         stats
     }
     
-    // Preview the structure with limited depth
     fn preview(&self, max_items: usize) -> String {
         let mut output = String::new();
         let mut cat_count = 0;
@@ -275,7 +259,6 @@ impl Microfiche {
         output
     }
     
-    // Get category distribution
     fn category_distribution(&self) -> Vec<(String, usize)> {
         let mut distribution: Vec<(String, usize)> = self.categories
             .iter()
@@ -293,7 +276,6 @@ impl Microfiche {
         distribution
     }
     
-    // Sample random entries
     fn sample_entries(&self, count: usize) -> Vec<String> {
         let mut entries = Vec::new();
         let mut collected = 0;
@@ -470,7 +452,6 @@ impl Microfiche {
         results
     }
     
-    // New helper to list all categories and subcategories
     fn list_structure(&self) -> String {
         let mut output = String::new();
         output.push_str("Knowledge Base Structure:\n");
@@ -495,7 +476,6 @@ impl Microfiche {
         results.into_iter().enumerate().map(|(i, r)| (i + 1, r)).collect()
     }
     
-    // Display a single entry in a focused, readable format
     fn display_entry(&self, path: &str) -> Option<String> {
         // Parse the path format: "Category.Subcategory.Concept.KeyDetail: Note"
         let parts: Vec<&str> = path.split(": ").collect();
@@ -518,7 +498,6 @@ impl Microfiche {
         output.push_str(&"-".repeat(80));
         output.push_str("\n\n");
         
-        // Word wrap the note content for better readability
         let note = parts[1];
         let wrapped = self.word_wrap(note, 76);
         output.push_str(&wrapped);
@@ -528,7 +507,6 @@ impl Microfiche {
         Some(output)
     }
     
-    // Helper function for word wrapping
     fn word_wrap(&self, text: &str, max_width: usize) -> String {
         let words: Vec<&str> = text.split_whitespace().collect();
         let mut lines = Vec::new();
@@ -555,10 +533,7 @@ impl Microfiche {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Single import command
     let fiche = Microfiche::from_csv(IN_FILE)?;
-    
-    // Validate
     let warnings = Microfiche::validate_csv(IN_FILE)?;
     if !warnings.is_empty() {
         println!("Validation warnings:");
@@ -568,7 +543,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!();
     }
         
-    // Display statistics
     println!("Statistics:");
     println!("{}", "=".repeat(50));
     let stats = fiche.stats();
@@ -579,7 +553,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Total Notes:          {}", stats.get("total_notes").unwrap_or(&0));
     println!("  Max Notes per Detail: {}", stats.get("max_notes_per_detail").unwrap_or(&0));
     
-    // Show category distribution
     println!("\nTop Categories by Note Count:");
     println!("{}", "=".repeat(50));
     let distribution = fiche.category_distribution();
@@ -589,12 +562,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  {}. {:<20} {} {}", i+1, name, bar, count);
     }
     
-    // Show structure preview
     println!("\nStructure Preview:");
     println!("{}", "=".repeat(50));
     println!("{}", fiche.preview(3));
     
-    // Show sample entries
     println!("Sample Entries:");
     println!("{}", "=".repeat(50));
     let samples = fiche.sample_entries(5);
@@ -633,7 +604,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
         
-        // Handle numbered selection (e.g., "#3")
+        // Handle numbered selection
         if query.starts_with('#') {
             if let Ok(num) = query[1..].parse::<usize>() {
                 if num > 0 && num <= last_results.len() {
