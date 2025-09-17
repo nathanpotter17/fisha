@@ -12,7 +12,8 @@ Category → Subcategory → Concept → KeyDetail → Note
 
 ## CSV Format
 
-Input file: `db/in.csv`
+Change the IN_FILE path `db/in.csv` at the top of main.rs to the appropriate path,
+and be sure the following column structure is preserved.
 
 | Category    | Subcategory | Concept           | KeyDetail  | Note                    |
 | ----------- | ----------- | ----------------- | ---------- | ----------------------- |
