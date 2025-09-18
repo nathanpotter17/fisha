@@ -1,3 +1,7 @@
 /target
 Cargo.lock
-db/in*.csv
+db/web.csv
+db/rust.csv
+db/culture.csv
+db/future.csv
+db/ethos.csv

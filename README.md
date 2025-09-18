@@ -1,6 +1,6 @@
 # Fisha
 
-A hierarchical knowledge base system for organizing and querying structured information via CSV.
+A lightweight knowledge base system that leverages Unix tools (`awk`, `sed`, `grep`) for efficient CSV data organization and querying.
 
 ## Structure
 
@@ -12,12 +12,18 @@ Category → Subcategory → Concept → KeyDetail → Note
 
 ## CSV Format
 
-Change the IN_FILE path `db/in.csv` at the top of main.rs to the appropriate path,
+Change the IN_FILE path `db/ethos.csv` at the top of main.rs to the appropriate path,
 and be sure the following column structure is preserved.
 
 | Category    | Subcategory | Concept           | KeyDetail  | Note                    |
 | ----------- | ----------- | ----------------- | ---------- | ----------------------- |
 | Mathematics | Algebra     | Quadratic Formula | Definition | x = (-b ± √(b²-4ac))/2a |
+
+**Important**: Fields containing commas must be wrapped in quotes:
+
+```csv
+Classic Design Talks,Design,Alan Kay,COFES,"Rethinking Design, Risk, and Software - url"
+```
 
 ## Usage
 
@@ -27,48 +33,107 @@ cargo run
 
 ## Features
 
-- **Import/Export**: Load from and save to CSV
-- **Validation**: Check for empty fields, duplicates, and formatting issues
-- **Statistics**: View counts and distribution across hierarchy levels
-- **Search**: Multiple query modes for precise information retrieval
+- **Unix-Powered**: Uses `awk`, `sed`, and `grep` for blazing-fast text processing
+- **Validation**: Shows problematic rows with detailed error messages
+- **Statistics**: View counts and distribution using awk aggregations
+- **Search**: Multiple query modes with grep-based pattern matching
 
 ## Search Commands
 
-| Command            | Description                              |
-| ------------------ | ---------------------------------------- |
-| `mathematics`      | Show all entries in Mathematics category |
-| `computer science` | Show all entries in matching subcategory |
-| `halting problem`  | Find entries containing both terms       |
-| `cat:math`         | Filter by category (partial match)       |
-| `sub:computer`     | Filter by subcategory (partial match)    |
-| `#3`               | View result #3 in detail                 |
-| `list`             | Show complete structure                  |
-| `help`             | Display search help                      |
-| `quit`             | Exit program                             |
+| Command                | Description                            |
+| ---------------------- | -------------------------------------- |
+| `search <term>`        | Search all fields for term             |
+| `cat:<category>`       | Filter by category (partial match)     |
+| `sub:<subcategory>`    | Filter by subcategory (partial match)  |
+| `and <t1> <t2> ...`    | Search multiple terms (ALL must match) |
+| `random <n>`           | Show n random entries                  |
+| `unique <field>`       | Show unique values for field           |
+| `export <term> <file>` | Export filtered results to file        |
+| `stats`                | Display statistics                     |
+| `list`                 | Show structure overview                |
+| `help`                 | Display available commands             |
+| `quit`                 | Exit program                           |
 
-## Search Behavior
+## Search Examples
 
-- Single word matching a category/subcategory returns all its contents
-- Multiple words require ALL terms to match (AND logic)
-- Searches are case-insensitive
-- Results show first 10 entries with numbered selection
+```bash
+> search byzantine
+> cat:math
+> sub:distributed systems
+> and consensus algorithm
+> random 5
+> unique category
+> export "machine learning" ml_entries.csv
+```
 
-## API Methods
+## Core Methods
 
 ```rust
-Microfiche::from_csv(path)     // Import CSV
-Microfiche::to_csv(path)        // Export CSV
-Microfiche::validate_csv(path)  // Check integrity
-Microfiche::stats()             // Get statistics
-Microfiche::search(query)       // Basic search
-Microfiche::advanced_search()   // Filtered search
-Microfiche::preview(max_items) // Structure preview
+Fisha::new(path)                // Create instance
+Fisha::validate()               // Validate CSV with row details
+Fisha::stats()                  // Statistics via awk
+Fisha::search(query)            // Search via grep
+Fisha::search_by_field()        // Field-specific awk search
+Fisha::search_all_terms()       // Multi-term grep pipeline
+Fisha::category_distribution()  // Top categories by count
+Fisha::list_structure()         // Structure overview
+Fisha::random_samples(n)        // Random entries via shuf
+Fisha::unique_values(field)     // Unique field values
+Fisha::export_filtered()        // Export search results
+```
+
+## Unix Tools Used
+
+- **awk**: Field processing, statistics, validation, aggregations
+- **sed**: Text transformations, CSV escaping
+- **grep**: Pattern matching, multi-term searches
+- **sort**: Ordering results
+- **shuf**: Random sampling
+
+## Performance Benefits
+
+- Stream processing without loading entire file into memory
+- C-optimized tools handle large datasets efficiently
+- Pipe composition for complex queries
+- Parallel processing capability with GNU parallel
+
+## Validation Output
+
+The validator will shows problematic rows:
+
+```
+Line 175: Expected 5 fields, got 6
+  Row: Learning Resources,Security,DEFCON,Talk,Title, Author - url
+Line 205: Empty field 3
+  Row: Mathematics,Algebra,,Definition,Missing concept field
+✗ Found 2 validation errors
+```
+
+## Integration with DIAGON
+
+Fisha can be integrated with DIAGON protocol for knowledge sharing between genesis pools:
+
+```rust
+// Publish CSV entry to DIAGON network
+node.publish_fisha_knowledge(csv_line);
+
+// Export pool knowledge to CSV
+node.export_pool_knowledge_to_csv();
+
+// Query network knowledge
+node.query_network_knowledge("byzantine consensus");
 ```
 
 ## Dependencies
 
 ```toml
 [dependencies]
-csv = "1.3"
-serde = { version = "1.0", features = ["derive"] }
+# No external crates required!
+# Uses system commands: awk, sed, grep, sort, shuf
 ```
+
+## System Requirements
+
+- Unix-like system (Linux, macOS, WSL on Windows)
+- Basic Unix tools: `awk`, `sed`, `grep`, `sort`, `shuf`
+- Optional: `parallel` for parallel processing
