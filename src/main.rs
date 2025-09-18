@@ -16,7 +16,7 @@ impl Fisha {
         }
     }
     
-    // Use awk for statistics - much simpler!
+    // Use awk for statistics
     fn stats(&self) -> Result<String, Box<dyn Error>> {
         let output = Command::new("sh")
             .arg("-c")
@@ -41,7 +41,7 @@ impl Fisha {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
     
-    // Use grep for searching - one-liner!
+    // Use grep for searching
     fn search(&self, query: &str) -> Result<Vec<String>, Box<dyn Error>> {
         let output = Command::new("grep")
             .arg("-i")  // case insensitive
@@ -245,25 +245,23 @@ impl Fisha {
     }
 }
 
-// Simplified main CLI
 fn main() -> Result<(), Box<dyn Error>> {
     let fisha = Fisha::new(IN_FILE);
     
-    // Quick validation
     println!("{}", fisha.validate()?);
     
-    println!("\n📊 Statistics:");
+    println!("\nStatistics:");
     println!("{}", fisha.stats()?);
     
-    println!("\n📈 Top Categories:");
+    println!("\nTop Categories:");
     println!("{}", fisha.category_distribution()?);
     
-    println!("\n🎲 Random Samples:");
+    println!("\nRandom Sample:");
     for sample in fisha.random_samples(3)? {
-        println!("  • {}", fisha.format_entry(&sample)?);
+        println!("  - {}", fisha.format_entry(&sample)?);
     }
     
-    println!("\n🔍 Search Interface (type 'help' for commands):");
+    println!("\nSearch Interface (type 'help' for commands):");
     
     loop {
         print!("> ");
