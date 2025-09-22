@@ -109,29 +109,6 @@ Line 205: Empty field 3
 ✗ Found 2 validation errors
 ```
 
-## Integration with DIAGON
-
-Fisha can be integrated with DIAGON protocol for knowledge sharing between genesis pools:
-
-```rust
-// Publish CSV entry to DIAGON network
-node.publish_fisha_knowledge(csv_line);
-
-// Export pool knowledge to CSV
-node.export_pool_knowledge_to_csv();
-
-// Query network knowledge
-node.query_network_knowledge("byzantine consensus");
-```
-
-## Dependencies
-
-```toml
-[dependencies]
-# No external crates required!
-# Uses system commands: awk, sed, grep, sort, shuf
-```
-
 ## System Requirements
 
 - Unix-like system (Linux, macOS, WSL on Windows)
