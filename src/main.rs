@@ -362,9 +362,11 @@ enum ViewMode {
 
 impl Default for MicroficheApp {
     fn default() -> Self {
-        Self {
-            microfiche: Microfiche::new(),
-            current_file: None,
+        let microfiche = Microfiche::from_csv("microfiche.csv").unwrap_or_else(|_| Microfiche::new());
+        
+        MicroficheApp {
+            microfiche,
+            current_file: Some("microfiche.csv".to_string()),
             search_query: String::new(),
             search_results: Vec::new(),
             new_category: String::new(),
@@ -375,7 +377,7 @@ impl Default for MicroficheApp {
             selected_category: None,
             selected_subcategory: None,
             selected_concept: None,
-            status_message: String::from("Ready"),
+            status_message: String::new(),
             view_mode: ViewMode::Browse,
             current_theme: Theme::Monokai,
             show_theme_selector: false,
@@ -384,40 +386,15 @@ impl Default for MicroficheApp {
 }
 
 impl MicroficheApp {
-    fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let app = Self::default();
-        app.current_theme.apply(&cc.egui_ctx);
-        app
-    }
-    
-    fn load_file(&mut self) {
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("CSV", &["csv"])
-            .pick_file()
-        {
-            match Microfiche::from_csv(path.to_str().unwrap()) {
-                Ok(fiche) => {
-                    self.microfiche = fiche;
-                    self.current_file = Some(path.to_str().unwrap().to_string());
-                    self.status_message = format!("Loaded: {}", path.file_name().unwrap().to_str().unwrap());
-                    self.search_results.clear();
-                },
-                Err(e) => {
-                    self.status_message = format!("Error loading file: {}", e);
-                }
-            }
-        }
+    fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+        Self::default()
     }
     
     fn save_file(&mut self) {
         if let Some(ref path) = self.current_file {
             match self.microfiche.to_csv(path) {
-                Ok(_) => {
-                    self.status_message = "File saved successfully".to_string();
-                },
-                Err(e) => {
-                    self.status_message = format!("Error saving: {}", e);
-                }
+                Ok(_) => self.status_message = format!("Saved to {}", path),
+                Err(e) => self.status_message = format!("Error saving: {}", e),
             }
         } else {
             self.save_file_as();
@@ -429,22 +406,53 @@ impl MicroficheApp {
             .add_filter("CSV", &["csv"])
             .save_file()
         {
-            match self.microfiche.to_csv(path.to_str().unwrap()) {
+            let path_str = path.to_string_lossy().to_string();
+            match self.microfiche.to_csv(&path_str) {
                 Ok(_) => {
-                    self.current_file = Some(path.to_str().unwrap().to_string());
-                    self.status_message = format!("Saved: {}", path.file_name().unwrap().to_str().unwrap());
+                    self.current_file = Some(path_str.clone());
+                    self.status_message = format!("Saved to {}", path_str);
                 },
-                Err(e) => {
-                    self.status_message = format!("Error saving: {}", e);
-                }
+                Err(e) => self.status_message = format!("Error saving: {}", e),
+            }
+        }
+    }
+    
+    fn open_file(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("CSV", &["csv"])
+            .pick_file()
+        {
+            let path_str = path.to_string_lossy().to_string();
+            match Microfiche::from_csv(&path_str) {
+                Ok(fiche) => {
+                    self.microfiche = fiche;
+                    self.current_file = Some(path_str.clone());
+                    self.status_message = format!("Loaded {}", path_str);
+                },
+                Err(e) => self.status_message = format!("Error loading: {}", e),
             }
         }
     }
     
     fn render_top_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            if ui.button("Open").clicked() {
-                self.load_file();
+            ui.menu_button("File", |ui| {
+                if ui.button("Open...").clicked() {
+                    self.open_file();
+                    ui.close_menu();
+                }
+                if ui.button("Save").clicked() {
+                    self.save_file();
+                    ui.close_menu();
+                }
+                if ui.button("Save As...").clicked() {
+                    self.save_file_as();
+                    ui.close_menu();
+                }
+            });
+            
+            if ui.button("Open...").clicked() {
+                self.open_file();
             }
             if ui.button("Save").clicked() {
                 self.save_file();
@@ -531,7 +539,7 @@ impl MicroficheApp {
                 ui.heading("Categories");
                 ui.separator();
                 
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     let mut categories: Vec<_> = self.microfiche.categories.keys().collect();
                     categories.sort();
                     
@@ -555,7 +563,7 @@ impl MicroficheApp {
                         ui.heading("Subcategories");
                         ui.separator();
                         
-                        egui::ScrollArea::vertical().show(ui, |ui| {
+                        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                             for subcat in &category.subcategories {
                                 let is_selected = self.selected_subcategory.as_ref() == Some(&subcat.name);
                                 if ui.selectable_label(is_selected, &subcat.name).clicked() {
@@ -604,7 +612,7 @@ impl MicroficheApp {
                 let mut to_edit: Option<(String, String, String, String, String)> = None;
                 let mut to_template: Option<(String, String, String, String)> = None;
                 
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     for (concept_name, details) in concepts {
                         ui.group(|ui| {
                             ui.strong(&concept_name);
@@ -614,38 +622,40 @@ impl MicroficheApp {
                                 ui.label(egui::RichText::new(&detail_name).color(egui::Color32::from_rgb(100, 149, 237)));
                                 
                                 for note in notes {
-                                    ui.horizontal(|ui| {
-                                        ui.label("  •");
-                                        ui.label(&note);
-                                        
-                                        if ui.button("Template").clicked() {
-                                            to_template = Some((
-                                                cat_name.clone(),
-                                                sub_name.clone(),
-                                                concept_name.clone(),
-                                                detail_name.clone(),
-                                            ));
-                                        }
-                                        
-                                        if ui.button("Edit").clicked() {
-                                            to_edit = Some((
-                                                cat_name.clone(),
-                                                sub_name.clone(),
-                                                concept_name.clone(),
-                                                detail_name.clone(),
-                                                note.clone(),
-                                            ));
-                                        }
-                                        
-                                        if ui.button("Delete").clicked() {
-                                            to_delete = Some((
-                                                cat_name.clone(),
-                                                sub_name.clone(),
-                                                concept_name.clone(),
-                                                detail_name.clone(),
-                                                note.clone(),
-                                            ));
-                                        }
+                                    ui.group(|ui| {
+                                        ui.vertical(|ui| {
+                                            ui.add(egui::Label::new(&note).wrap());
+                                            ui.horizontal(|ui| {
+                                                if ui.button("Template").clicked() {
+                                                    to_template = Some((
+                                                        cat_name.clone(),
+                                                        sub_name.clone(),
+                                                        concept_name.clone(),
+                                                        detail_name.clone(),
+                                                    ));
+                                                }
+                                                
+                                                if ui.button("Edit").clicked() {
+                                                    to_edit = Some((
+                                                        cat_name.clone(),
+                                                        sub_name.clone(),
+                                                        concept_name.clone(),
+                                                        detail_name.clone(),
+                                                        note.clone(),
+                                                    ));
+                                                }
+                                                
+                                                if ui.button("Delete").clicked() {
+                                                    to_delete = Some((
+                                                        cat_name.clone(),
+                                                        sub_name.clone(),
+                                                        concept_name.clone(),
+                                                        detail_name.clone(),
+                                                        note.clone(),
+                                                    ));
+                                                }
+                                            });
+                                        });
                                     });
                                 }
                                 ui.add_space(5.0);
@@ -722,16 +732,13 @@ impl MicroficheApp {
         let mut to_edit: Option<(String, String, String, String, String)> = None;
         let mut to_template: Option<(String, String, String, String)> = None;
         
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             for (cat, sub, con, det, note) in &results {
                 ui.group(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.strong(format!("{}.{}.{}.{}", cat, sub, con, det));
-                            ui.label(note);
-                        });
-                        
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.vertical(|ui| {
+                        ui.strong(format!("{}.{}.{}.{}", cat, sub, con, det));
+                        ui.add(egui::Label::new(note).wrap());
+                        ui.horizontal(|ui| {
                             if ui.button("Delete").clicked() {
                                 to_delete = Some((cat.clone(), sub.clone(), con.clone(), det.clone(), note.clone()));
                             }
@@ -798,39 +805,41 @@ impl MicroficheApp {
         egui::Grid::new("create_grid")
             .num_columns(2)
             .spacing([10.0, 10.0])
-            .striped(true)
             .show(ui, |ui| {
                 ui.label("Category:");
-                ui.text_edit_singleline(&mut self.new_category);
+                ui.add(egui::TextEdit::singleline(&mut self.new_category).desired_width(f32::INFINITY));
                 ui.end_row();
                 
                 ui.label("Subcategory:");
-                ui.text_edit_singleline(&mut self.new_subcategory);
+                ui.add(egui::TextEdit::singleline(&mut self.new_subcategory).desired_width(f32::INFINITY));
                 ui.end_row();
                 
                 ui.label("Concept:");
-                ui.text_edit_singleline(&mut self.new_concept);
+                ui.add(egui::TextEdit::singleline(&mut self.new_concept).desired_width(f32::INFINITY));
                 ui.end_row();
                 
                 ui.label("Key Detail:");
-                ui.text_edit_singleline(&mut self.new_key_detail);
-                ui.end_row();
-                
-                ui.label("Note:");
-                ui.text_edit_multiline(&mut self.new_note);
+                ui.add(egui::TextEdit::singleline(&mut self.new_key_detail).desired_width(f32::INFINITY));
                 ui.end_row();
             });
         
-        ui.add_space(10.0);
+        ui.separator();
+        ui.label("Note:");
+        ui.add(
+            egui::TextEdit::multiline(&mut self.new_note)
+                .desired_width(f32::INFINITY)
+                .desired_rows(10)
+        );
         
-        ui.horizontal(|ui| {
-            let can_create = !self.new_category.is_empty() 
-                && !self.new_subcategory.is_empty()
-                && !self.new_concept.is_empty()
-                && !self.new_key_detail.is_empty()
-                && !self.new_note.is_empty();
-            
-            if ui.add_enabled(can_create, egui::Button::new("Create Entry")).clicked() {
+        ui.separator();
+        
+        if ui.button("Create").clicked() {
+            if !self.new_category.is_empty() 
+                && !self.new_subcategory.is_empty() 
+                && !self.new_concept.is_empty() 
+                && !self.new_key_detail.is_empty() 
+                && !self.new_note.is_empty() 
+            {
                 self.microfiche.add_row(FicheRow {
                     category: self.new_category.clone(),
                     subcategory: self.new_subcategory.clone(),
@@ -842,297 +851,67 @@ impl MicroficheApp {
                 self.status_message = "Entry created successfully".to_string();
                 
                 // Clear form
-                self.new_note.clear();
-            }
-            
-            if ui.button("Clear Form").clicked() {
                 self.new_category.clear();
                 self.new_subcategory.clear();
                 self.new_concept.clear();
                 self.new_key_detail.clear();
                 self.new_note.clear();
+            } else {
+                self.status_message = "All fields are required".to_string();
             }
-        });
-        
-        ui.add_space(20.0);
-        ui.separator();
-        
-        ui.label("Tip: Leave fields the same to add multiple notes to the same path");
-    }
-
-    fn estimate_memory_usage(&self) -> usize {
-        let mut total = 0;
-        
-        for (cat_name, category) in &self.microfiche.categories {
-            total += cat_name.len();
-            for subcat in &category.subcategories {
-                total += subcat.name.len();
-                for concept in &subcat.concepts {
-                    total += concept.name.len();
-                    for detail in &concept.details {
-                        total += detail.name.len();
-                        for note in &detail.notes {
-                            total += note.content.len();
-                        }
-                    }
-                }
-            }
-        }
-        
-        // Add overhead for structure (rough estimate)
-        total * 2
-    }
-
-    fn find_deepest_category(&self) -> String {
-        let mut deepest_name = "N/A".to_string();
-        let mut max_depth = 0;
-        
-        for (cat_name, category) in &self.microfiche.categories {
-            let subcats = category.subcategories.len();
-            if subcats > max_depth {
-                max_depth = subcats;
-                deepest_name = cat_name.clone();
-            }
-        }
-        
-        if max_depth > 0 {
-            format!("{} ({} subcats)", deepest_name, max_depth)
-        } else {
-            deepest_name
-        }
-    }
-
-    fn find_largest_category(&self) -> String {
-        let mut largest_name = "N/A".to_string();
-        let mut max_notes = 0;
-        
-        for (cat_name, category) in &self.microfiche.categories {
-            let note_count: usize = category.subcategories.iter()
-                .flat_map(|s| &s.concepts)
-                .flat_map(|c| &c.details)
-                .map(|d| d.notes.len())
-                .sum();
-            
-            if note_count > max_notes {
-                max_notes = note_count;
-                largest_name = cat_name.clone();
-            }
-        }
-        
-        if max_notes > 0 {
-            format!("{} ({} notes)", largest_name, max_notes)
-        } else {
-            largest_name
         }
     }
     
     fn render_stats_view(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Knowledge Base Statistics");
+        ui.heading("Statistics");
         ui.separator();
         
         let stats = self.microfiche.stats();
-        let total_notes = *stats.get("total_notes").unwrap_or(&0);
-        let total_cats = *stats.get("categories").unwrap_or(&0);
-        let total_concepts = *stats.get("concepts").unwrap_or(&0);
-        let total_details = *stats.get("key_details").unwrap_or(&0);
         
-        // Calculate estimated memory usage
-        let estimated_bytes = self.estimate_memory_usage();
-        let max_reasonable_bytes = 100 * 1024 * 1024; // 100 MB as a reasonable limit
-        
-        // Calculate averages
-        let avg_notes_per_cat = if total_cats > 0 { total_notes as f32 / total_cats as f32 } else { 0.0 };
-        let avg_concepts_per_cat = if total_cats > 0 { total_concepts as f32 / total_cats as f32 } else { 0.0 };
-        
-        // Get theme colors
-        let (accent_color, secondary_color, tertiary_color) = match self.current_theme {
-            Theme::Monokai => (
-                egui::Color32::from_rgb(249, 38, 114),  // Pink
-                egui::Color32::from_rgb(102, 217, 239), // Cyan
-                egui::Color32::from_rgb(230, 219, 116), // Yellow
-            ),
-            Theme::TomorrowBlueHour => (
-                egui::Color32::from_rgb(125, 174, 198), // Light blue
-                egui::Color32::from_rgb(255, 204, 102), // Yellow
-                egui::Color32::from_rgb(255, 102, 102), // Red
-            ),
-            Theme::DarkPlus => (
-                egui::Color32::from_rgb(78, 162, 230),  // Blue
-                egui::Color32::from_rgb(206, 145, 120), // Orange
-                egui::Color32::from_rgb(244, 71, 71),   // Red
-            ),
-        };
-        
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            let panel_height = 280.0;
-            
-            // Top row - 2x1 grid
-            egui::Grid::new("stats_top_grid")
-                .num_columns(2)
-                .spacing([10.0, 10.0])
-                .min_col_width((ui.available_width() - 10.0) / 2.0)
-                .show(ui, |ui| {
-                    // Left panel: Storage Usage
-                    ui.group(|ui| {
-                        ui.set_height(panel_height);
-                        ui.vertical(|ui| {
-                            ui.heading("Storage Usage");
-                            ui.separator();
-                            ui.add_space(5.0);
-                            
-                            let usage_percent = (estimated_bytes as f32 / max_reasonable_bytes as f32 * 100.0).min(100.0);
-                            
-                            ui.label(egui::RichText::new(format!("Current: {} KB", estimated_bytes / 1024)).size(14.0));
-                            ui.label(egui::RichText::new(format!("Limit: {} MB", max_reasonable_bytes / (1024 * 1024))).size(14.0));
-                            ui.label(egui::RichText::new(format!("Usage: {:.1}%", usage_percent)).size(14.0).strong());
-                            
-                            ui.add_space(15.0);
-                            
-                            // Storage bar
-                            let bar_width = ui.available_width();
-                            let bar_height = 40.0;
-                            let filled_width = bar_width * (usage_percent / 100.0);
-                            
-                            let (rect, _response) = ui.allocate_exact_size(
-                                egui::vec2(bar_width, bar_height),
-                                egui::Sense::hover()
-                            );
-                            
-                            // Draw background
-                            ui.painter().rect_filled(
-                                rect,
-                                4.0,
-                                ui.style().visuals.faint_bg_color
-                            );
-                            
-                            // Draw filled portion
-                            if filled_width > 0.0 {
-                                let filled_rect = egui::Rect::from_min_size(
-                                    rect.min,
-                                    egui::vec2(filled_width, bar_height)
-                                );
-                                
-                                let color = if usage_percent < 50.0 {
-                                    secondary_color
-                                } else if usage_percent < 80.0 {
-                                    tertiary_color
-                                } else {
-                                    accent_color
-                                };
-                                
-                                ui.painter().rect_filled(filled_rect, 4.0, color);
-                            }
-                            
-                            ui.add_space(15.0);
-                            ui.label(egui::RichText::new(format!("Total Entries: {}", total_notes)).size(16.0).strong().color(accent_color));
-                            
-                            ui.add_space(10.0);
-                            
-                            // Quick facts
-                            ui.separator();
-                            ui.add_space(5.0);
-                            ui.label(egui::RichText::new("Status:").strong());
-                            ui.add_space(3.0);
-                            
-                            if total_notes == 0 {
-                                ui.label("• Knowledge base is empty");
-                                ui.label("• Start by creating your first entry");
-                            } else if total_notes < 50 {
-                                ui.label("• Building your knowledge base");
-                                ui.label(&format!("• {} more to reach 50 notes", 50 - total_notes));
-                            } else if total_notes < 100 {
-                                ui.label("• Solid progress!");
-                                ui.label(&format!("• {} more to reach 100 notes", 100 - total_notes));
-                            } else {
-                                ui.label("• Impressive collection!");
-                                ui.label(&format!("• {} notes organized", total_notes));
-                            }
-                        });
-                    });
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.group(|ui| {
+                ui.vertical(|ui| {
+                    ui.heading("Overview");
+                    ui.separator();
+                    ui.add_space(5.0);
                     
-                    // Right panel: Hierarchy Overview & Insights
-                    ui.group(|ui| {
-                        ui.set_height(panel_height);
-                        ui.vertical(|ui| {
-                            ui.heading("Hierarchy & Insights");
-                            ui.separator();
-                            ui.add_space(5.0);
+                    egui::Grid::new("hierarchy_grid")
+                        .num_columns(2)
+                        .spacing([20.0, 10.0])
+                        .striped(true)
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new("Categories:").strong());
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.label(egui::RichText::new(stats.get("categories").unwrap_or(&0).to_string()).strong().size(15.0).color(egui::Color32::from_rgb(100, 149, 237)));
+                            });
+                            ui.end_row();
                             
-                            egui::Grid::new("hierarchy_grid")
-                                .num_columns(2)
-                                .spacing([20.0, 10.0])
-                                .striped(true)
-                                .show(ui, |ui| {
-                                    ui.label(egui::RichText::new("Categories:").strong());
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        ui.label(egui::RichText::new(total_cats.to_string()).strong().size(15.0).color(accent_color));
-                                    });
-                                    ui.end_row();
-                                    
-                                    ui.label(egui::RichText::new("Subcategories:").strong());
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        ui.label(egui::RichText::new(stats.get("subcategories").unwrap_or(&0).to_string()).size(15.0).color(secondary_color));
-                                    });
-                                    ui.end_row();
-                                    
-                                    ui.label(egui::RichText::new("Concepts:").strong());
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        ui.label(egui::RichText::new(total_concepts.to_string()).size(15.0).color(tertiary_color));
-                                    });
-                                    ui.end_row();
-                                    
-                                    ui.label(egui::RichText::new("Key Details:").strong());
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        ui.label(egui::RichText::new(total_details.to_string()).size(15.0).color(accent_color));
-                                    });
-                                    ui.end_row();
-                                    
-                                    ui.label(egui::RichText::new("Total Notes:").strong());
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        ui.label(egui::RichText::new(total_notes.to_string()).strong().size(15.0).color(secondary_color));
-                                    });
-                                    ui.end_row();
-                                });
+                            ui.label(egui::RichText::new("Subcategories:").strong());
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.label(egui::RichText::new(stats.get("subcategories").unwrap_or(&0).to_string()).size(15.0).color(egui::Color32::from_rgb(144, 238, 144)));
+                            });
+                            ui.end_row();
                             
-                            ui.add_space(10.0);
-                            ui.separator();
-                            ui.add_space(5.0);
+                            ui.label(egui::RichText::new("Concepts:").strong());
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.label(egui::RichText::new(stats.get("concepts").unwrap_or(&0).to_string()).size(15.0).color(egui::Color32::from_rgb(255, 182, 193)));
+                            });
+                            ui.end_row();
                             
-                            egui::Grid::new("insights_grid")
-                                .num_columns(2)
-                                .spacing([20.0, 8.0])
-                                .show(ui, |ui| {
-                                    ui.label("Avg Notes/Category:");
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        ui.label(egui::RichText::new(format!("{:.1}", avg_notes_per_cat)).strong());
-                                    });
-                                    ui.end_row();
-                                    
-                                    ui.label("Avg Concepts/Category:");
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        ui.label(egui::RichText::new(format!("{:.1}", avg_concepts_per_cat)).strong());
-                                    });
-                                    ui.end_row();
-                                    
-                                    ui.label("Deepest Category:");
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        let deepest = self.find_deepest_category();
-                                        ui.label(egui::RichText::new(deepest).strong());
-                                    });
-                                    ui.end_row();
-                                    
-                                    ui.label("Largest Category:");
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        let largest = self.find_largest_category();
-                                        ui.label(egui::RichText::new(largest).strong());
-                                    });
-                                    ui.end_row();
-                                });
+                            ui.label(egui::RichText::new("Key Details:").strong());
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.label(egui::RichText::new(stats.get("key_details").unwrap_or(&0).to_string()).size(15.0).color(egui::Color32::from_rgb(255, 218, 185)));
+                            });
+                            ui.end_row();
+                            
+                            ui.label(egui::RichText::new("Total Notes:").strong());
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.label(egui::RichText::new(stats.get("total_notes").unwrap_or(&0).to_string()).strong().size(15.0).color(egui::Color32::from_rgb(221, 160, 221)));
+                            });
+                            ui.end_row();
                         });
-                    });
-                    
-                    ui.end_row();
                 });
+            });
             
             ui.add_space(10.0);
             
@@ -1165,7 +944,7 @@ impl MicroficheApp {
                         let max_notes = cat_data.iter().map(|(_, n)| *n).max().unwrap_or(1);
                         let available_width = ui.available_width() - 300.0;
                         
-                        egui::ScrollArea::vertical().max_height(250.0).show(ui, |ui| {
+                        egui::ScrollArea::vertical().max_height(250.0).auto_shrink([false, false]).show(ui, |ui| {
                             for (i, (cat_name, note_count)) in cat_data.iter().enumerate() {
                                 ui.horizontal(|ui| {
                                     // Category name with fixed width
@@ -1181,6 +960,10 @@ impl MicroficheApp {
                                     );
                                     
                                     // Use theme colors
+                                    let accent_color = egui::Color32::from_rgb(100, 149, 237);
+                                    let secondary_color = egui::Color32::from_rgb(144, 238, 144);
+                                    let tertiary_color = egui::Color32::from_rgb(255, 182, 193);
+                                    
                                     let color = if i % 3 == 0 {
                                         accent_color
                                     } else if i % 3 == 1 {
@@ -1206,10 +989,13 @@ impl MicroficheApp {
 
 impl eframe::App for MicroficheApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ctx, |ui| {
+        self.current_theme.apply(ctx);
+        
+        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             self.render_top_bar(ui, ctx);
-            ui.separator();
-            
+        });
+        
+        egui::CentralPanel::default().show(ctx, |ui| {
             match self.view_mode {
                 ViewMode::Browse => self.render_browse_view(ui),
                 ViewMode::Search => self.render_search_view(ui),
