@@ -451,16 +451,6 @@ impl MicroficheApp {
                 }
             });
             
-            if ui.button("Open...").clicked() {
-                self.open_file();
-            }
-            if ui.button("Save").clicked() {
-                self.save_file();
-            }
-            if ui.button("Save As...").clicked() {
-                self.save_file_as();
-            }
-            
             ui.separator();
             
             if ui.selectable_label(self.view_mode == ViewMode::Browse, "Browse").clicked() {
