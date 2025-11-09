@@ -3,24 +3,13 @@
 use eframe::egui;
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
-use csv::{Reader, Writer};
+use csv::{Reader, Writer, StringRecord};
 use std::error::Error;
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-struct Notes {
-    content: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-struct KeyDetails {
-    name: String,
-    notes: Vec<Notes>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct Concept {
     name: String,
-    details: Vec<KeyDetails>,
+    notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -48,8 +37,6 @@ struct FicheRow {
     subcategory: String,
     #[serde(rename = "Concept")]
     concept: String,
-    #[serde(rename = "KeyDetail")]
-    key_detail: String,
     #[serde(rename = "Note")]
     note: String,
 }
@@ -75,21 +62,18 @@ impl Microfiche {
     
     fn to_csv(&self, path: &str) -> Result<(), Box<dyn Error>> {
         let mut wtr = Writer::from_path(path)?;
-        wtr.write_record(&["Category", "Subcategory", "Concept", "KeyDetail", "Note"])?;
+        wtr.write_record(&["Category", "Subcategory", "Concept", "Note"])?;
         
         for (cat_name, category) in &self.categories {
             for subcat in &category.subcategories {
                 for concept in &subcat.concepts {
-                    for detail in &concept.details {
-                        for note in &detail.notes {
-                            wtr.write_record(&[
-                                &cat_name,
-                                &subcat.name,
-                                &concept.name,
-                                &detail.name,
-                                &note.content,
-                            ])?;
-                        }
+                    for note in &concept.notes {
+                        wtr.write_record(&[
+                            &cat_name,
+                            &subcat.name,
+                            &concept.name,
+                            note,
+                        ])?;
                     }
                 }
             }
@@ -119,29 +103,17 @@ impl Microfiche {
         if !subcat.concepts.iter().any(|c| c.name == row.concept) {
             subcat.concepts.push(Concept {
                 name: row.concept.clone(),
-                details: Vec::new(),
+                notes: Vec::new(),
             });
         }
         let concept = subcat.concepts.iter_mut()
             .find(|c| c.name == row.concept)
             .unwrap();
         
-        if !concept.details.iter().any(|d| d.name == row.key_detail) {
-            concept.details.push(KeyDetails {
-                name: row.key_detail.clone(),
-                notes: Vec::new(),
-            });
-        }
-        let detail = concept.details.iter_mut()
-            .find(|d| d.name == row.key_detail)
-            .unwrap();
-        
-        detail.notes.push(Notes {
-            content: row.note,
-        });
+        concept.notes.push(row.note);
     }
     
-    fn search(&self, query: &str) -> Vec<(String, String, String, String, String)> {
+    fn search(&self, query: &str) -> Vec<(String, String, String, String)> {
         let mut results = Vec::new();
         let query_lower = query.to_lowercase();
         
@@ -152,21 +124,18 @@ impl Microfiche {
         for (cat_name, category) in &self.categories {
             for subcat in &category.subcategories {
                 for concept in &subcat.concepts {
-                    for detail in &concept.details {
-                        for note in &detail.notes {
-                            let full_text = format!("{} {} {} {} {}", 
-                                cat_name, subcat.name, concept.name, detail.name, note.content)
-                                .to_lowercase();
-                            
-                            if full_text.contains(&query_lower) {
-                                results.push((
-                                    cat_name.clone(),
-                                    subcat.name.clone(),
-                                    concept.name.clone(),
-                                    detail.name.clone(),
-                                    note.content.clone(),
-                                ));
-                            }
+                    for note in &concept.notes {
+                        let full_text = format!("{} {} {} {}", 
+                            cat_name, subcat.name, concept.name, note)
+                            .to_lowercase();
+                        
+                        if full_text.contains(&query_lower) {
+                            results.push((
+                                cat_name.clone(),
+                                subcat.name.clone(),
+                                concept.name.clone(),
+                                note.clone(),
+                            ));
                         }
                     }
                 }
@@ -176,30 +145,25 @@ impl Microfiche {
         results
     }
     
-    fn delete_note(&mut self, cat: &str, sub: &str, con: &str, det: &str, note_content: &str) -> bool {
+    fn delete_note(&mut self, cat: &str, sub: &str, con: &str, note_content: &str) -> bool {
         if let Some(category) = self.categories.get_mut(cat) {
             if let Some(subcat) = category.subcategories.iter_mut().find(|s| s.name == sub) {
                 if let Some(concept) = subcat.concepts.iter_mut().find(|c| c.name == con) {
-                    if let Some(detail) = concept.details.iter_mut().find(|d| d.name == det) {
-                        if let Some(pos) = detail.notes.iter().position(|n| n.content == note_content) {
-                            detail.notes.remove(pos);
-                            
-                            // Cleanup empty structures
-                            if detail.notes.is_empty() {
-                                concept.details.retain(|d| !d.notes.is_empty());
-                            }
-                            if concept.details.is_empty() {
-                                subcat.concepts.retain(|c| !c.details.is_empty());
-                            }
-                            if subcat.concepts.is_empty() {
-                                category.subcategories.retain(|s| !s.concepts.is_empty());
-                            }
-                            if category.subcategories.is_empty() {
-                                self.categories.remove(cat);
-                            }
-                            
-                            return true;
+                    if let Some(pos) = concept.notes.iter().position(|n| n == note_content) {
+                        concept.notes.remove(pos);
+                        
+                        // Cleanup empty structures
+                        if concept.notes.is_empty() {
+                            subcat.concepts.retain(|c| !c.notes.is_empty());
                         }
+                        if subcat.concepts.is_empty() {
+                            category.subcategories.retain(|s| !s.concepts.is_empty());
+                        }
+                        if category.subcategories.is_empty() {
+                            self.categories.remove(cat);
+                        }
+                        
+                        return true;
                     }
                 }
             }
@@ -211,7 +175,6 @@ impl Microfiche {
         let mut stats = HashMap::new();
         let mut total_subcats = 0;
         let mut total_concepts = 0;
-        let mut total_details = 0;
         let mut total_notes = 0;
         
         stats.insert("categories".to_string(), self.categories.len());
@@ -221,17 +184,13 @@ impl Microfiche {
             for subcat in &category.subcategories {
                 total_concepts += subcat.concepts.len();
                 for concept in &subcat.concepts {
-                    total_details += concept.details.len();
-                    for detail in &concept.details {
-                        total_notes += detail.notes.len();
-                    }
+                    total_notes += concept.notes.len();
                 }
             }
         }
         
         stats.insert("subcategories".to_string(), total_subcats);
         stats.insert("concepts".to_string(), total_concepts);
-        stats.insert("key_details".to_string(), total_details);
         stats.insert("total_notes".to_string(), total_notes);
         
         stats
@@ -244,13 +203,12 @@ struct MicroficheApp {
     
     // UI State
     search_query: String,
-    search_results: Vec<(String, String, String, String, String)>,
+    search_results: Vec<(String, String, String, String)>,
     
     // Create form
     new_category: String,
     new_subcategory: String,
     new_concept: String,
-    new_key_detail: String,
     new_note: String,
     
     // Selected for viewing
@@ -362,9 +320,10 @@ enum ViewMode {
 
 impl Default for MicroficheApp {
     fn default() -> Self {
-        let microfiche = Microfiche::from_csv("microfiche.csv").unwrap_or_else(|_| Microfiche::new());
+        let microfiche = Microfiche::from_csv("microfiche.csv")
+            .unwrap_or_else(|_| Microfiche::new());
         
-        MicroficheApp {
+        let mut app = MicroficheApp {
             microfiche,
             current_file: Some("microfiche.csv".to_string()),
             search_query: String::new(),
@@ -372,7 +331,6 @@ impl Default for MicroficheApp {
             new_category: String::new(),
             new_subcategory: String::new(),
             new_concept: String::new(),
-            new_key_detail: String::new(),
             new_note: String::new(),
             selected_category: None,
             selected_subcategory: None,
@@ -381,7 +339,9 @@ impl Default for MicroficheApp {
             view_mode: ViewMode::Browse,
             current_theme: Theme::Monokai,
             show_theme_selector: false,
-        }
+        };
+        
+        app
     }
 }
 
@@ -567,17 +527,13 @@ impl MicroficheApp {
         }
         
         // Collect data before rendering to avoid borrow issues
-        let display_data: Option<(String, String, Vec<(String, Vec<(String, Vec<String>)>)>)> = 
+        let display_data: Option<(String, String, Vec<(String, Vec<String>)>)> = 
             if let Some(ref cat_name) = self.selected_category {
                 if let Some(category) = self.microfiche.categories.get(cat_name) {
                     if let Some(ref sub_name) = self.selected_subcategory {
                         if let Some(subcat) = category.subcategories.iter().find(|s| &s.name == sub_name) {
                             let concepts: Vec<_> = subcat.concepts.iter().map(|concept| {
-                                let details: Vec<_> = concept.details.iter().map(|detail| {
-                                    let notes: Vec<_> = detail.notes.iter().map(|n| n.content.clone()).collect();
-                                    (detail.name.clone(), notes)
-                                }).collect();
-                                (concept.name.clone(), details)
+                                (concept.name.clone(), concept.notes.clone())
                             }).collect();
                             Some((cat_name.clone(), sub_name.clone(), concepts))
                         } else {
@@ -598,78 +554,70 @@ impl MicroficheApp {
                 ui.heading(format!("{} > {}", cat_name, sub_name));
                 ui.separator();
                 
-                let mut to_delete: Option<(String, String, String, String, String)> = None;
-                let mut to_edit: Option<(String, String, String, String, String)> = None;
-                let mut to_template: Option<(String, String, String, String)> = None;
+                let mut to_delete: Option<(String, String, String, String)> = None;
+                let mut to_edit: Option<(String, String, String, String)> = None;
+                let mut to_template: Option<(String, String, String)> = None;
                 
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    for (concept_name, details) in concepts {
+                    for (concept_name, notes) in concepts {
                         ui.group(|ui| {
-                            ui.strong(&concept_name);
+                            ui.strong(egui::RichText::new(&concept_name).color(egui::Color32::from_rgb(100, 149, 237)));
                             ui.separator();
                             
-                            for (detail_name, notes) in details {
-                                ui.label(egui::RichText::new(&detail_name).color(egui::Color32::from_rgb(100, 149, 237)));
-                                
-                                for note in notes {
-                                    ui.group(|ui| {
-                                        ui.vertical(|ui| {
-                                            ui.add(egui::Label::new(&note).wrap());
-                                            ui.horizontal(|ui| {
-                                                if ui.button("Template").clicked() {
-                                                    to_template = Some((
-                                                        cat_name.clone(),
-                                                        sub_name.clone(),
-                                                        concept_name.clone(),
-                                                        detail_name.clone(),
-                                                    ));
-                                                }
-                                                
-                                                if ui.button("Edit").clicked() {
-                                                    to_edit = Some((
-                                                        cat_name.clone(),
-                                                        sub_name.clone(),
-                                                        concept_name.clone(),
-                                                        detail_name.clone(),
-                                                        note.clone(),
-                                                    ));
-                                                }
-                                                
-                                                if ui.button("Delete").clicked() {
-                                                    to_delete = Some((
-                                                        cat_name.clone(),
-                                                        sub_name.clone(),
-                                                        concept_name.clone(),
-                                                        detail_name.clone(),
-                                                        note.clone(),
-                                                    ));
-                                                }
-                                            });
+                            for note in notes {
+                                ui.group(|ui| {
+                                    ui.vertical(|ui| {
+                                        ui.add(egui::Label::new(&note).wrap());
+                                        ui.horizontal(|ui| {
+                                            if ui.button("Template").clicked() {
+                                                to_template = Some((
+                                                    cat_name.clone(),
+                                                    sub_name.clone(),
+                                                    concept_name.clone(),
+                                                ));
+                                            }
+                                            
+                                            if ui.button("Edit").clicked() {
+                                                to_edit = Some((
+                                                    cat_name.clone(),
+                                                    sub_name.clone(),
+                                                    concept_name.clone(),
+                                                    note.clone(),
+                                                ));
+                                            }
+                                            
+                                            if ui.button("Delete").clicked() {
+                                                to_delete = Some((
+                                                    cat_name.clone(),
+                                                    sub_name.clone(),
+                                                    concept_name.clone(),
+                                                    note.clone(),
+                                                ));
+                                            }
                                         });
                                     });
-                                }
-                                ui.add_space(5.0);
+                                });
                             }
+                            ui.add_space(5.0);
                         });
                         ui.add_space(10.0);
                     }
                 });
                 
                 // Handle actions after the scroll area
-                if let Some((cat, sub, con, det, note)) = to_delete {
-                    if self.microfiche.delete_note(&cat, &sub, &con, &det, &note) {
+                if let Some((cat, sub, con, note)) = to_delete {
+                    if self.microfiche.delete_note(&cat, &sub, &con, &note) {
                         self.status_message = "Entry deleted".to_string();
                     }
                 }
                 
-                if let Some((cat, sub, con, det, note)) = to_edit {
+                if let Some((cat, sub, con, note)) = to_edit {
                     // Delete the old entry
-                    if self.microfiche.delete_note(&cat, &sub, &con, &det, &note) {
+                    if self.microfiche.delete_note(&cat, &sub, &con, &note) {
                         // Populate the create form with the old data
                         self.new_category = cat;
                         self.new_subcategory = sub;
                         self.new_concept = con;
-                        self.new_key_detail = det;
                         self.new_note = note;
                         
                         // Switch to create view
@@ -678,12 +626,11 @@ impl MicroficheApp {
                     }
                 }
                 
-                if let Some((cat, sub, con, det)) = to_template {
+                if let Some((cat, sub, con)) = to_template {
                     // Populate the create form but leave note empty
                     self.new_category = cat;
                     self.new_subcategory = sub;
                     self.new_concept = con;
-                    self.new_key_detail = det;
                     self.new_note.clear();
                     
                     // Switch to create view
@@ -718,27 +665,27 @@ impl MicroficheApp {
         
         // Clone results to avoid borrow issues
         let results = self.search_results.clone();
-        let mut to_delete: Option<(String, String, String, String, String)> = None;
-        let mut to_edit: Option<(String, String, String, String, String)> = None;
-        let mut to_template: Option<(String, String, String, String)> = None;
+        let mut to_delete: Option<(String, String, String, String)> = None;
+        let mut to_edit: Option<(String, String, String, String)> = None;
+        let mut to_template: Option<(String, String, String)> = None;
         
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            for (cat, sub, con, det, note) in &results {
+            for (cat, sub, con, note) in &results {
                 ui.group(|ui| {
                     ui.vertical(|ui| {
-                        ui.strong(format!("{}.{}.{}.{}", cat, sub, con, det));
+                        ui.strong(format!("{} > {} > {}", cat, sub, con));
                         ui.add(egui::Label::new(note).wrap());
                         ui.horizontal(|ui| {
                             if ui.button("Delete").clicked() {
-                                to_delete = Some((cat.clone(), sub.clone(), con.clone(), det.clone(), note.clone()));
+                                to_delete = Some((cat.clone(), sub.clone(), con.clone(), note.clone()));
                             }
                             
                             if ui.button("Edit").clicked() {
-                                to_edit = Some((cat.clone(), sub.clone(), con.clone(), det.clone(), note.clone()));
+                                to_edit = Some((cat.clone(), sub.clone(), con.clone(), note.clone()));
                             }
                             
                             if ui.button("Template").clicked() {
-                                to_template = Some((cat.clone(), sub.clone(), con.clone(), det.clone()));
+                                to_template = Some((cat.clone(), sub.clone(), con.clone()));
                             }
                         });
                     });
@@ -748,21 +695,20 @@ impl MicroficheApp {
         });
         
         // Handle actions after the scroll area
-        if let Some((cat, sub, con, det, note)) = to_delete {
-            if self.microfiche.delete_note(&cat, &sub, &con, &det, &note) {
+        if let Some((cat, sub, con, note)) = to_delete {
+            if self.microfiche.delete_note(&cat, &sub, &con, &note) {
                 self.search_results = self.microfiche.search(&self.search_query);
                 self.status_message = "Entry deleted".to_string();
             }
         }
         
-        if let Some((cat, sub, con, det, note)) = to_edit {
+        if let Some((cat, sub, con, note)) = to_edit {
             // Delete the old entry
-            if self.microfiche.delete_note(&cat, &sub, &con, &det, &note) {
+            if self.microfiche.delete_note(&cat, &sub, &con, &note) {
                 // Populate the create form with the old data
                 self.new_category = cat;
                 self.new_subcategory = sub;
                 self.new_concept = con;
-                self.new_key_detail = det;
                 self.new_note = note;
                 
                 // Switch to create view
@@ -774,12 +720,11 @@ impl MicroficheApp {
             }
         }
         
-        if let Some((cat, sub, con, det)) = to_template {
+        if let Some((cat, sub, con)) = to_template {
             // Populate the create form but leave note empty
             self.new_category = cat;
             self.new_subcategory = sub;
             self.new_concept = con;
-            self.new_key_detail = det;
             self.new_note.clear();
             
             // Switch to create view
@@ -807,10 +752,6 @@ impl MicroficheApp {
                 ui.label("Concept:");
                 ui.add(egui::TextEdit::singleline(&mut self.new_concept).desired_width(f32::INFINITY));
                 ui.end_row();
-                
-                ui.label("Key Detail:");
-                ui.add(egui::TextEdit::singleline(&mut self.new_key_detail).desired_width(f32::INFINITY));
-                ui.end_row();
             });
         
         ui.separator();
@@ -827,14 +768,12 @@ impl MicroficheApp {
             if !self.new_category.is_empty() 
                 && !self.new_subcategory.is_empty() 
                 && !self.new_concept.is_empty() 
-                && !self.new_key_detail.is_empty() 
                 && !self.new_note.is_empty() 
             {
                 self.microfiche.add_row(FicheRow {
                     category: self.new_category.clone(),
                     subcategory: self.new_subcategory.clone(),
                     concept: self.new_concept.clone(),
-                    key_detail: self.new_key_detail.clone(),
                     note: self.new_note.clone(),
                 });
                 
@@ -844,7 +783,6 @@ impl MicroficheApp {
                 self.new_category.clear();
                 self.new_subcategory.clear();
                 self.new_concept.clear();
-                self.new_key_detail.clear();
                 self.new_note.clear();
             } else {
                 self.status_message = "All fields are required".to_string();
@@ -853,126 +791,169 @@ impl MicroficheApp {
     }
     
     fn render_stats_view(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Statistics");
-        ui.separator();
-        
-        let stats = self.microfiche.stats();
-        
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.group(|ui| {
-                ui.vertical(|ui| {
-                    ui.heading("Overview");
-                    ui.separator();
-                    ui.add_space(5.0);
-                    
-                    egui::Grid::new("hierarchy_grid")
-                        .num_columns(2)
-                        .spacing([20.0, 10.0])
-                        .striped(true)
-                        .show(ui, |ui| {
-                            ui.label(egui::RichText::new("Categories:").strong());
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label(egui::RichText::new(stats.get("categories").unwrap_or(&0).to_string()).strong().size(15.0).color(egui::Color32::from_rgb(100, 149, 237)));
-                            });
-                            ui.end_row();
+        // Use a vertical layout that fills all available space
+        ui.vertical(|ui| {
+            ui.heading("Statistics");
+            ui.separator();
+            
+            let stats = self.microfiche.stats();
+            
+            // Get theme colors from the current visuals
+            let visuals = ui.ctx().style().visuals.clone();
+            let accent_color = visuals.hyperlink_color;
+            let secondary_color = visuals.selection.stroke.color;
+            let tertiary_color = visuals.warn_fg_color;
+            let error_color = visuals.error_fg_color;
+            
+            // ScrollArea should take all remaining height
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])  // Don't shrink
+                .show(ui, |ui| {
+                    // Overview panel
+                    ui.group(|ui| {
+                        ui.set_width(ui.available_width());
+                        ui.vertical(|ui| {
+                            ui.heading("Overview");
+                            ui.separator();
+                            ui.add_space(5.0);
                             
-                            ui.label(egui::RichText::new("Subcategories:").strong());
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label(egui::RichText::new(stats.get("subcategories").unwrap_or(&0).to_string()).size(15.0).color(egui::Color32::from_rgb(144, 238, 144)));
-                            });
-                            ui.end_row();
-                            
-                            ui.label(egui::RichText::new("Concepts:").strong());
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label(egui::RichText::new(stats.get("concepts").unwrap_or(&0).to_string()).size(15.0).color(egui::Color32::from_rgb(255, 182, 193)));
-                            });
-                            ui.end_row();
-                            
-                            ui.label(egui::RichText::new("Key Details:").strong());
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label(egui::RichText::new(stats.get("key_details").unwrap_or(&0).to_string()).size(15.0).color(egui::Color32::from_rgb(255, 218, 185)));
-                            });
-                            ui.end_row();
-                            
-                            ui.label(egui::RichText::new("Total Notes:").strong());
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label(egui::RichText::new(stats.get("total_notes").unwrap_or(&0).to_string()).strong().size(15.0).color(egui::Color32::from_rgb(221, 160, 221)));
-                            });
-                            ui.end_row();
+                            egui::Grid::new("hierarchy_grid")
+                                .num_columns(2)
+                                .spacing([20.0, 10.0])
+                                .striped(true)
+                                .min_col_width(ui.available_width() / 2.0 - 10.0)
+                                .show(ui, |ui| {
+                                    ui.label(egui::RichText::new("Categories:").strong());
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.label(egui::RichText::new(stats.get("categories").unwrap_or(&0).to_string())
+                                            .strong()
+                                            .size(15.0)
+                                            .color(accent_color));
+                                    });
+                                    ui.end_row();
+                                    
+                                    ui.label(egui::RichText::new("Subcategories:").strong());
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.label(egui::RichText::new(stats.get("subcategories").unwrap_or(&0).to_string())
+                                            .size(15.0)
+                                            .color(secondary_color));
+                                    });
+                                    ui.end_row();
+                                    
+                                    ui.label(egui::RichText::new("Concepts:").strong());
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.label(egui::RichText::new(stats.get("concepts").unwrap_or(&0).to_string())
+                                            .size(15.0)
+                                            .color(tertiary_color));
+                                    });
+                                    ui.end_row();
+                                    
+                                    ui.label(egui::RichText::new("Total Notes:").strong());
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.label(egui::RichText::new(stats.get("total_notes").unwrap_or(&0).to_string())
+                                            .strong()
+                                            .size(15.0)
+                                            .color(error_color));
+                                    });
+                                    ui.end_row();
+                                });
                         });
-                });
-            });
-            
-            ui.add_space(10.0);
-            
-            // Bottom panel: Full-width Category Distribution Bar Graph
-            ui.group(|ui| {
-                ui.set_min_height(300.0);
-                ui.vertical(|ui| {
-                    ui.heading("Category Distribution");
-                    ui.separator();
+                    });
+                    
                     ui.add_space(10.0);
                     
-                    let mut cat_data: Vec<_> = self.microfiche.categories.iter()
-                        .map(|(name, category)| {
-                            let note_count: usize = category.subcategories.iter()
-                                .flat_map(|s| &s.concepts)
-                                .flat_map(|c| &c.details)
-                                .map(|d| d.notes.len())
-                                .sum();
-                            (name.clone(), note_count)
-                        })
-                        .collect();
-                    
-                    cat_data.sort_by(|a, b| b.1.cmp(&a.1));
-                    
-                    if cat_data.is_empty() {
-                        ui.centered_and_justified(|ui| {
-                            ui.label(egui::RichText::new("No categories yet...").size(16.0).color(egui::Color32::GRAY));
-                        });
-                    } else {
-                        let max_notes = cat_data.iter().map(|(_, n)| *n).max().unwrap_or(1);
-                        let available_width = ui.available_width() - 300.0;
+                    // Category Distribution panel
+                    ui.group(|ui| {
+                        ui.set_width(ui.available_width());
+                        ui.set_min_height(300.0);
                         
-                        egui::ScrollArea::vertical().max_height(250.0).auto_shrink([false, false]).show(ui, |ui| {
-                            for (i, (cat_name, note_count)) in cat_data.iter().enumerate() {
-                                ui.horizontal(|ui| {
-                                    // Category name with fixed width
-                                    ui.add_sized([200.0, 24.0], egui::Label::new(
-                                        egui::RichText::new(cat_name.as_str()).size(14.0)
-                                    ));
-                                    
-                                    // Bar
-                                    let bar_width = (available_width * (*note_count as f32 / max_notes as f32)).max(5.0);
-                                    let (rect, _response) = ui.allocate_exact_size(
-                                        egui::vec2(bar_width, 28.0),
-                                        egui::Sense::hover()
-                                    );
-                                    
-                                    // Use theme colors
-                                    let accent_color = egui::Color32::from_rgb(100, 149, 237);
-                                    let secondary_color = egui::Color32::from_rgb(144, 238, 144);
-                                    let tertiary_color = egui::Color32::from_rgb(255, 182, 193);
-                                    
-                                    let color = if i % 3 == 0 {
-                                        accent_color
-                                    } else if i % 3 == 1 {
-                                        secondary_color
-                                    } else {
-                                        tertiary_color
-                                    };
-                                    
-                                    ui.painter().rect_filled(rect, 4.0, color);
-                                    
-                                    // Note count
-                                    ui.label(egui::RichText::new(format!("{} notes", note_count)).strong().size(14.0));
+                        ui.vertical(|ui| {
+                            ui.heading("Category Distribution");
+                            ui.separator();
+                            ui.add_space(10.0);
+                            
+                            let mut cat_data: Vec<_> = self.microfiche.categories.iter()
+                                .map(|(name, category)| {
+                                    let note_count: usize = category.subcategories.iter()
+                                        .flat_map(|s| &s.concepts)
+                                        .map(|c| c.notes.len())
+                                        .sum();
+                                    (name.clone(), note_count)
+                                })
+                                .collect();
+                            
+                            cat_data.sort_by(|a, b| b.1.cmp(&a.1));
+                            
+                            if cat_data.is_empty() {
+                                ui.centered_and_justified(|ui| {
+                                    ui.label(egui::RichText::new("No categories yet...")
+                                        .size(16.0)
+                                        .color(egui::Color32::GRAY));
                                 });
-                                ui.add_space(8.0);
+                            } else {
+                                let max_notes = cat_data.iter().map(|(_, n)| *n).max().unwrap_or(1);
+                                
+                                // Create a container that fills the width
+                                ui.vertical(|ui| {
+                                    ui.set_width(ui.available_width());
+                                    
+                                    // Inner scroll area for the bars
+                                    egui::ScrollArea::vertical()
+                                        .max_height(250.0)
+                                        .auto_shrink([false, false])
+                                        .show(ui, |ui| {
+                                            ui.set_width(ui.available_width());
+                                            
+                                            for (i, (cat_name, note_count)) in cat_data.iter().enumerate() {
+                                                ui.horizontal(|ui| {
+                                                    // Calculate available space for the bar
+                                                    let total_width = ui.available_width();
+                                                    let label_width = 200.0;
+                                                    let count_width = 80.0;
+                                                    let spacing = 20.0;
+                                                    let bar_max_width = (total_width - label_width - count_width - spacing).max(50.0);
+                                                    
+                                                    // Category name
+                                                    ui.add_sized([label_width, 24.0], egui::Label::new(
+                                                        egui::RichText::new(cat_name.as_str()).size(14.0)
+                                                    ));
+                                                    
+                                                    // Bar
+                                                    let bar_width = (bar_max_width * (*note_count as f32 / max_notes as f32)).max(5.0);
+                                                    let (rect, _response) = ui.allocate_exact_size(
+                                                        egui::vec2(bar_width, 24.0),
+                                                        egui::Sense::hover()
+                                                    );
+                                                    
+                                                    // Cycle through theme colors
+                                                    let color = match i % 4 {
+                                                        0 => accent_color,
+                                                        1 => secondary_color,
+                                                        2 => tertiary_color,
+                                                        _ => error_color,
+                                                    };
+                                                    
+                                                    ui.painter().rect_filled(rect, 4.0, color);
+                                                    
+                                                    // Add spacing
+                                                    ui.add_space(spacing);
+                                                    
+                                                    // Note count
+                                                    ui.label(egui::RichText::new(format!("{} notes", note_count))
+                                                        .strong()
+                                                        .size(14.0));
+                                                });
+                                                ui.add_space(8.0);
+                                            }
+                                        });
+                                });
                             }
                         });
-                    }
+                    });
+                    
+                    // Add some padding at the bottom
+                    ui.add_space(10.0);
                 });
-            });
         });
     }
 }

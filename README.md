@@ -4,50 +4,83 @@ A lightweight desktop GUI application for organizing knowledge in a hierarchical
 
 ## Overview
 
-Fisha provides a clean, intuitive interface for managing knowledge organized in a 5-level hierarchy:
-
+Fisha provides a clean, intuitive interface for managing knowledge organized in a 4-level hierarchy:
 ```
-Category → Subcategory → Concept → KeyDetail → Note
+Category → Subcategory → Concept → Note
 ```
 
 ## Features
 
-- **Browse View**: Navigate your knowledge hierarchy with expandable sections
-- **Search**: Full-text search across all fields with result highlighting
+- **Browse View**: Navigate your knowledge hierarchy with side panels for categories and subcategories
+- **Search**: Full-text search across all fields with inline results
 - **Create**: Add new entries through a guided form interface
-- **Statistics**: Visual dashboard with category distribution and counts
-- **CSV Import/Export**: Load and save your knowledge base
-- **Theme Support**: Light and dark themes
-- **Entry Management**: Delete individual notes or entire branches
+- **Statistics**: Visual dashboard with category distribution bars and hierarchy counts
+- **CSV Import/Export**: Load and save your knowledge base with File menu
+- **Theme Support**: Three professionally designed dark themes (Monokai, Tomorrow Blue Hour, Dark+)
+- **Entry Management**: Edit, delete, or use as template for quick entry creation
+- **Auto-save**: Loads `microfiche.csv` from current directory on startup
 
 ## CSV Format
 
-| Category | Subcategory | Concept | KeyDetail | Note |
-|----------|-------------|---------|-----------|------|
-| Mathematics | Algebra | Quadratic Formula | Definition | x = (-b ± √(b²-4ac))/2a |
+The application expects a CSV file with the following 4 columns:
 
-**Note**: The application expects headers: `Category`, `Subcategory`, `Concept`, `KeyDetail`, `Note`
+| Category | Subcategory | Concept | Note |
+|----------|-------------|---------|------|
+| Mathematics | Algebra | Quadratic Formula | x = (-b ± √(b²-4ac))/2a |
+
+**Important**: 
+- Headers must be: `Category`, `Subcategory`, `Concept`, `Note`
+- Multiple notes can exist for the same concept
+- Avoid excessive commas in note content as they're used for CSV field separation
 
 ## Usage
-
 ```bash
+# Run the application
 cargo run
+
+# Or build and run release version
+cargo build --release
+./target/release/fisha
 ```
 
-On startup, the application looks for `db/database.csv` and loads it automatically. You can load your
-own file by using File -> Open.
+On startup, the application automatically loads `microfiche.csv` from the current directory if it exists.
 
 ## Controls
 
-- **Browse Tab**: Click categories/subcategories to expand and view entries
-- **Search Tab**: Enter search terms to filter across all fields
-- **Create Tab**: Fill in all fields and click "Create" to add new entries
-- **Stats Tab**: View hierarchy statistics and category distribution chart
-- **File Menu**: Import/Export CSV files
-- **Theme Toggle**: Switch between light and dark modes
+### Browse Tab
+- Click categories in left panel to view subcategories
+- Click subcategories in middle panel to view concepts and notes
+- **Template**: Load category/subcategory/concept to create a new note
+- **Edit**: Load an entry into the Create form for modification
+- **Delete**: Remove the note from the database
+
+### Search Tab
+- Enter search terms to find matches across all fields
+- Results show full hierarchy path: Category > Subcategory > Concept
+- Edit, Delete, and Template buttons available for each result
+
+### Create Tab
+- Fill in Category, Subcategory, Concept, and Note fields
+- All fields are required
+- Click "Create" to add the entry
+- Form clears automatically after successful creation
+
+### Stats Tab
+- View total counts for categories, subcategories, concepts, and notes
+- Visual bar chart shows note distribution across categories
+- Themed colors match your selected theme
+
+### File Menu
+- **Open**: Import a CSV file
+- **Save**: Save to current file (or prompt if no file loaded)
+- **Save As**: Export to a new CSV file
+
+### Theme Selector
+- Click "Theme" button in top bar
+- Choose from Monokai, Tomorrow (Blue Hour), or Dark+
+- Theme applies immediately
 
 ## Building
-
 ```bash
 # Development build
 cargo build
@@ -60,23 +93,25 @@ cargo build --release
 
 - Rust 1.70+
 - Dependencies: `eframe`, `egui`, `csv`, `serde`, `rfd`
-- Works on Windows, macOS, and Linux
+- Cross-platform: Windows, macOS, and Linux
 
 ## Data Structure
 
-The application loads CSV data into an in-memory hierarchical structure for fast navigation and search. Changes persist when exported back to CSV format.
+The application loads CSV data into an in-memory hierarchical structure:
+- Fast navigation and searching
+- Changes are maintained in memory until saved
+- Export back to CSV preserves all data
 
-## Usage Notes
+## Tips
 
-Note: When creating many entries, or using the app for a long time, be sure to manually save periodically via File -> Save.
+- **Manual Saves**: Remember to save periodically via File → Save
+- **Edit Workflow**: Click "Edit" to modify an entry (deletes original, loads into Create form)
+- **Template Workflow**: Click "Template" to quickly create similar entries with same category/subcategory/concept
+- **Search Performance**: Search is case-insensitive and searches across all text fields
 
-Note: When creating an entry, be sure to limit the usage of commas, as they are used for field separation.
-
-## Example DB File
-
-```
-Category,Subcategory,Concept,KeyDetail,Note
-19th Century Computing,Apollo Project,VCF Midwest 2025,SAGE Air Defense,The SAGE Air Defense System - https://www.youtube.com/watch?v=Q8iOfaMd5oY
-19th Century Computing,Apollo Computer,1969 AGC,Light Years Ahead,Light Years Ahead 1969 Apollo Guidance Computer - https://www.youtube.com/watch?v=B1J2RMorJXM
-
+## Example CSV File
+```csv
+Category,Subcategory,Concept,Note
+19th Century Computing,Apollo Project,VCF Midwest 2025,The SAGE Air Defense System - https://www.youtube.com/watch?v=Q8iOfaMd5oY
+19th Century Computing,Apollo Computer,1969 AGC,Light Years Ahead 1969 Apollo Guidance Computer - https://www.youtube.com/watch?v=B1J2RMorJXM
 ```
