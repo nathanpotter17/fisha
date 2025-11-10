@@ -225,6 +225,10 @@ struct MicroficheApp {
     // Theme
     current_theme: Theme,
     show_theme_selector: bool,
+
+    // Pagination
+    cooccurrence_page: usize,
+    category_page: usize,
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -339,6 +343,8 @@ impl Default for MicroficheApp {
             view_mode: ViewMode::Browse,
             current_theme: Theme::Monokai,
             show_theme_selector: false,
+            cooccurrence_page: 0,
+            category_page: 0,
         };
         
         app
@@ -791,169 +797,353 @@ impl MicroficheApp {
     }
     
     fn render_stats_view(&mut self, ui: &mut egui::Ui) {
-        // Use a vertical layout that fills all available space
+        use std::collections::{HashMap, HashSet};
+        
+        // Helper function to extract words from text
+        fn extract_words(text: &str) -> Vec<String> {
+            let stop_words: HashSet<&str> = [
+                "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+                "of", "with", "by", "from", "as", "is", "was", "are", "were", "be",
+                "been", "being", "have", "has", "had", "do", "does", "did", "will",
+                "would", "should", "could", "may", "might", "must", "can", "this",
+                "that", "these", "those", "i", "you", "he", "she", "it", "we", "they",
+                "what", "which", "who", "when", "where", "why", "how", "all", "each",
+                "every", "both", "few", "more", "most", "other", "some", "such", "no",
+                "not", "only", "own", "same", "so", "than", "too", "very", "just",
+                "www", "youtube", "https", "com", "github", "http", "watch", "conference",
+                "commit", "src", "main"
+            ].iter().cloned().collect();
+            
+            text.to_lowercase()
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|w| w.len() > 2 && !stop_words.contains(w))
+                .map(|w| w.to_string())
+                .collect()
+        }
+        
+        // Analyze all text content
+        let mut word_freq: HashMap<String, usize> = HashMap::new();
+        let mut category_terms: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut term_categories: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut co_occurrences: HashMap<(String, String), usize> = HashMap::new();
+        
+        for (cat_name, category) in &self.microfiche.categories {
+            let mut cat_words = HashSet::new();
+            
+            for subcat in &category.subcategories {
+                for concept in &subcat.concepts {
+                    // Extract words from concept name
+                    for word in extract_words(&concept.name) {
+                        *word_freq.entry(word.clone()).or_insert(0) += 1;
+                        cat_words.insert(word.clone());
+                        term_categories.entry(word.clone())
+                            .or_insert_with(HashSet::new)
+                            .insert(cat_name.clone());
+                    }
+                    
+                    // Extract words from all notes
+                    for note in &concept.notes {
+                        let words = extract_words(note);
+                        for word in &words {
+                            *word_freq.entry(word.clone()).or_insert(0) += 1;
+                            cat_words.insert(word.clone());
+                            term_categories.entry(word.clone())
+                                .or_insert_with(HashSet::new)
+                                .insert(cat_name.clone());
+                        }
+                        
+                        // Calculate co-occurrences
+                        for i in 0..words.len() {
+                            for j in (i + 1)..words.len() {
+                                if words[i] != words[j] {
+                                    let pair = if words[i] < words[j] {
+                                        (words[i].clone(), words[j].clone())
+                                    } else {
+                                        (words[j].clone(), words[i].clone())
+                                    };
+                                    *co_occurrences.entry(pair).or_insert(0) += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            category_terms.insert(cat_name.clone(), cat_words);
+        }
+        
+        // Get top co-occurrences with stable sorting
+        let mut top_cooccur: Vec<_> = co_occurrences.iter()
+            .map(|(pair, count)| (pair.clone(), *count))
+            .collect();
+        top_cooccur.sort_by(|a, b| {
+            match b.1.cmp(&a.1) {
+                std::cmp::Ordering::Equal => a.0.cmp(&b.0),
+                other => other,
+            }
+        });
+        
+        // Pagination constants
+        const ITEMS_PER_PAGE: usize = 10;
+        let total_cooccur = top_cooccur.len();
+        let total_cooccur_pages = (total_cooccur + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE;
+        
+        let stats = self.microfiche.stats();
+        let visuals = ui.ctx().style().visuals.clone();
+        let accent_color = visuals.hyperlink_color;
+        let secondary_color = visuals.selection.stroke.color;
+        let tertiary_color = visuals.warn_fg_color;
+        let error_color = visuals.error_fg_color;
+        
+        // Main container
         ui.vertical(|ui| {
-            ui.heading("Statistics");
+            // Header
+            ui.heading("Knowledge Statistics & Word Associations");
             ui.separator();
+            ui.add_space(5.0);
             
-            let stats = self.microfiche.stats();
-            
-            // Get theme colors from the current visuals
-            let visuals = ui.ctx().style().visuals.clone();
-            let accent_color = visuals.hyperlink_color;
-            let secondary_color = visuals.selection.stroke.color;
-            let tertiary_color = visuals.warn_fg_color;
-            let error_color = visuals.error_fg_color;
-            
-            // ScrollArea should take all remaining height
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])  // Don't shrink
-                .show(ui, |ui| {
-                    // Overview panel
-                    ui.group(|ui| {
-                        ui.set_width(ui.available_width());
-                        ui.vertical(|ui| {
-                            ui.heading("Overview");
-                            ui.separator();
-                            ui.add_space(5.0);
-                            
-                            egui::Grid::new("hierarchy_grid")
-                                .num_columns(2)
-                                .spacing([20.0, 10.0])
-                                .striped(true)
-                                .min_col_width(ui.available_width() / 2.0 - 10.0)
-                                .show(ui, |ui| {
-                                    ui.label(egui::RichText::new("Categories:").strong());
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        ui.label(egui::RichText::new(stats.get("categories").unwrap_or(&0).to_string())
-                                            .strong()
-                                            .size(15.0)
-                                            .color(accent_color));
-                                    });
-                                    ui.end_row();
-                                    
-                                    ui.label(egui::RichText::new("Subcategories:").strong());
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        ui.label(egui::RichText::new(stats.get("subcategories").unwrap_or(&0).to_string())
-                                            .size(15.0)
-                                            .color(secondary_color));
-                                    });
-                                    ui.end_row();
-                                    
-                                    ui.label(egui::RichText::new("Concepts:").strong());
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        ui.label(egui::RichText::new(stats.get("concepts").unwrap_or(&0).to_string())
-                                            .size(15.0)
-                                            .color(tertiary_color));
-                                    });
-                                    ui.end_row();
-                                    
-                                    ui.label(egui::RichText::new("Total Notes:").strong());
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        ui.label(egui::RichText::new(stats.get("total_notes").unwrap_or(&0).to_string())
-                                            .strong()
-                                            .size(15.0)
-                                            .color(error_color));
-                                    });
-                                    ui.end_row();
-                                });
+            // Overview panel - this establishes our width
+            ui.group(|ui| {
+                ui.set_width(ui.available_width());
+                ui.heading("Overview");
+                ui.separator();
+                ui.add_space(5.0);
+                
+                egui::Grid::new("hierarchy_grid")
+                    .num_columns(2)
+                    .spacing([20.0, 10.0])
+                    .striped(true)
+                    .min_col_width(ui.available_width() / 2.0 - 10.0)
+                    .show(ui, |ui| {
+                        ui.label(egui::RichText::new("Categories:").strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(egui::RichText::new(stats.get("categories").unwrap_or(&0).to_string())
+                                .strong().size(15.0).color(accent_color));
                         });
+                        ui.end_row();
+                        
+                        ui.label(egui::RichText::new("Subcategories:").strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(egui::RichText::new(stats.get("subcategories").unwrap_or(&0).to_string())
+                                .size(15.0).color(secondary_color));
+                        });
+                        ui.end_row();
+                        
+                        ui.label(egui::RichText::new("Concepts:").strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(egui::RichText::new(stats.get("concepts").unwrap_or(&0).to_string())
+                                .size(15.0).color(tertiary_color));
+                        });
+                        ui.end_row();
+                        
+                        ui.label(egui::RichText::new("Total Notes:").strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(egui::RichText::new(stats.get("total_notes").unwrap_or(&0).to_string())
+                                .strong().size(15.0).color(error_color));
+                        });
+                        ui.end_row();
+                        
+                        ui.label(egui::RichText::new("Unique Terms:").strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(egui::RichText::new(word_freq.len().to_string())
+                                .size(15.0).color(accent_color));
+                        });
+                        ui.end_row();
                     });
+            });
+            
+            ui.add_space(10.0);
+            
+            // Calculate available height for the two panels
+            let available_height = ui.available_height() - 20.0;
+            let total_width = ui.available_width();
+            let panel_spacing = 10.0;
+            let panel_width = (total_width - panel_spacing) / 2.0;
+            
+            // Side by side panels - using columns for exact sizing
+            ui.columns(2, |columns| {
+                // Left panel - Term Co-occurrence
+                columns[0].vertical(|ui| {
+                    ui.set_height(available_height);
                     
-                    ui.add_space(10.0);
-                    
-                    // Category Distribution panel
                     ui.group(|ui| {
                         ui.set_width(ui.available_width());
-                        ui.set_min_height(300.0);
+                        ui.set_height(available_height);
                         
                         ui.vertical(|ui| {
-                            ui.heading("Category Distribution");
-                            ui.separator();
-                            ui.add_space(10.0);
+                            ui.heading("Term Co-occurrences");
+                            ui.label("Pairs appearing together");
                             
-                            let mut cat_data: Vec<_> = self.microfiche.categories.iter()
-                                .map(|(name, category)| {
-                                    let note_count: usize = category.subcategories.iter()
-                                        .flat_map(|s| &s.concepts)
-                                        .map(|c| c.notes.len())
-                                        .sum();
-                                    (name.clone(), note_count)
-                                })
-                                .collect();
-                            
-                            cat_data.sort_by(|a, b| b.1.cmp(&a.1));
-                            
-                            if cat_data.is_empty() {
+                            if top_cooccur.is_empty() {
+                                ui.separator();
                                 ui.centered_and_justified(|ui| {
-                                    ui.label(egui::RichText::new("No categories yet...")
-                                        .size(16.0)
-                                        .color(egui::Color32::GRAY));
+                                    ui.label(egui::RichText::new("No co-occurrences found")
+                                        .size(14.0).color(egui::Color32::GRAY));
                                 });
                             } else {
-                                let max_notes = cat_data.iter().map(|(_, n)| *n).max().unwrap_or(1);
+                                ui.separator();
                                 
-                                // Create a container that fills the width
-                                ui.vertical(|ui| {
-                                    ui.set_width(ui.available_width());
-                                    
-                                    // Inner scroll area for the bars
-                                    egui::ScrollArea::vertical()
-                                        .max_height(250.0)
-                                        .auto_shrink([false, false])
-                                        .show(ui, |ui| {
-                                            ui.set_width(ui.available_width());
-                                            
-                                            for (i, (cat_name, note_count)) in cat_data.iter().enumerate() {
-                                                ui.horizontal(|ui| {
-                                                    // Calculate available space for the bar
-                                                    let total_width = ui.available_width();
-                                                    let label_width = 200.0;
-                                                    let count_width = 80.0;
-                                                    let spacing = 20.0;
-                                                    let bar_max_width = (total_width - label_width - count_width - spacing).max(50.0);
-                                                    
-                                                    // Category name
-                                                    ui.add_sized([label_width, 24.0], egui::Label::new(
-                                                        egui::RichText::new(cat_name.as_str()).size(14.0)
-                                                    ));
-                                                    
-                                                    // Bar
-                                                    let bar_width = (bar_max_width * (*note_count as f32 / max_notes as f32)).max(5.0);
-                                                    let (rect, _response) = ui.allocate_exact_size(
-                                                        egui::vec2(bar_width, 24.0),
-                                                        egui::Sense::hover()
-                                                    );
-                                                    
-                                                    // Cycle through theme colors
-                                                    let color = match i % 4 {
-                                                        0 => accent_color,
-                                                        1 => secondary_color,
-                                                        2 => tertiary_color,
-                                                        _ => error_color,
-                                                    };
-                                                    
-                                                    ui.painter().rect_filled(rect, 4.0, color);
-                                                    
-                                                    // Add spacing
-                                                    ui.add_space(spacing);
-                                                    
-                                                    // Note count
-                                                    ui.label(egui::RichText::new(format!("{} notes", note_count))
-                                                        .strong()
-                                                        .size(14.0));
-                                                });
-                                                ui.add_space(8.0);
-                                            }
-                                        });
+                                // Pagination controls
+                                ui.horizontal(|ui| {
+                                    if ui.button("◀ Prev").clicked() && self.cooccurrence_page > 0 {
+                                        self.cooccurrence_page -= 1;
+                                    }
+                                    ui.label(format!("Page {} / {}", self.cooccurrence_page + 1, total_cooccur_pages.max(1)));
+                                    if ui.button("Next ▶").clicked() && self.cooccurrence_page < total_cooccur_pages.saturating_sub(1) {
+                                        self.cooccurrence_page += 1;
+                                    }
                                 });
+                                
+                                ui.separator();
+                                
+                                // Clamp page number
+                                if self.cooccurrence_page >= total_cooccur_pages {
+                                    self.cooccurrence_page = total_cooccur_pages.saturating_sub(1);
+                                }
+                                
+                                let start_idx = self.cooccurrence_page * ITEMS_PER_PAGE;
+                                let end_idx = (start_idx + ITEMS_PER_PAGE).min(total_cooccur);
+                                
+                                egui::ScrollArea::vertical()
+                                    .id_source("cooccurrence_scroll")
+                                    .auto_shrink([false, false])
+                                    .show(ui, |ui| {
+                                        for ((term1, term2), count) in &top_cooccur[start_idx..end_idx] {
+                                            ui.group(|ui| {
+                                                ui.set_width(ui.available_width());
+                                                ui.horizontal(|ui| {
+                                                    ui.strong(egui::RichText::new(term1.as_str()).color(accent_color));
+                                                    ui.label("↔");
+                                                    ui.strong(egui::RichText::new(term2.as_str()).color(secondary_color));
+                                                });
+                                                ui.label(egui::RichText::new(format!("{} occurrences", count))
+                                                    .size(11.0)
+                                                    .color(tertiary_color));
+                                                
+                                                // Show shared categories in a compact way
+                                                let mut pair_categories: HashSet<String> = HashSet::new();
+                                                if let Some(cats1) = term_categories.get(term1) {
+                                                    if let Some(cats2) = term_categories.get(term2) {
+                                                        pair_categories = cats1.intersection(cats2).cloned().collect();
+                                                    }
+                                                }
+                                                
+                                                if !pair_categories.is_empty() {
+                                                    let mut cat_list: Vec<_> = pair_categories.iter().collect();
+                                                    cat_list.sort();
+                                                    let cat_display = cat_list.iter().take(3)
+                                                        .map(|s| s.as_str())
+                                                        .collect::<Vec<_>>()
+                                                        .join(", ");
+                                                    ui.label(egui::RichText::new(cat_display)
+                                                        .size(10.0)
+                                                        .color(egui::Color32::GRAY));
+                                                }
+                                            });
+                                            ui.add_space(3.0);
+                                        }
+                                    });
                             }
                         });
                     });
-                    
-                    // Add some padding at the bottom
-                    ui.add_space(10.0);
                 });
+                
+                // Right panel - Category-Term Distribution
+                columns[1].vertical(|ui| {
+                    ui.set_height(available_height);
+                    
+                    ui.group(|ui| {
+                        ui.set_width(ui.available_width());
+                        ui.set_height(available_height);
+                        
+                        ui.vertical(|ui| {
+                            ui.heading("Category-Term Distribution");
+                            ui.label("Top terms per category");
+                            
+                            if category_terms.is_empty() {
+                                ui.separator();
+                                ui.centered_and_justified(|ui| {
+                                    ui.label(egui::RichText::new("No categories yet")
+                                        .size(14.0).color(egui::Color32::GRAY));
+                                });
+                            } else {
+                                ui.separator();
+                                
+                                let mut sorted_cats: Vec<_> = category_terms.iter().collect();
+                                sorted_cats.sort_by(|a, b| a.0.cmp(b.0));
+                                
+                                let total_cats = sorted_cats.len();
+                                let total_cat_pages = (total_cats + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE;
+                                
+                                // Pagination controls
+                                ui.horizontal(|ui| {
+                                    if ui.button("◀ Prev").clicked() && self.category_page > 0 {
+                                        self.category_page -= 1;
+                                    }
+                                    ui.label(format!("Page {} / {}", self.category_page + 1, total_cat_pages.max(1)));
+                                    if ui.button("Next ▶").clicked() && self.category_page < total_cat_pages.saturating_sub(1) {
+                                        self.category_page += 1;
+                                    }
+                                });
+                                
+                                ui.separator();
+                                
+                                // Clamp page number
+                                if self.category_page >= total_cat_pages {
+                                    self.category_page = total_cat_pages.saturating_sub(1);
+                                }
+                                
+                                let start_idx = self.category_page * ITEMS_PER_PAGE;
+                                let end_idx = (start_idx + ITEMS_PER_PAGE).min(total_cats);
+                                
+                                egui::ScrollArea::vertical()
+                                    .id_source("category_terms_scroll")
+                                    .auto_shrink([false, false])
+                                    .show(ui, |ui| {
+                                        for (cat_name, terms) in &sorted_cats[start_idx..end_idx] {
+                                            ui.group(|ui| {
+                                                ui.set_width(ui.available_width());
+                                                ui.strong(egui::RichText::new(cat_name.as_str()).color(accent_color));
+                                                ui.label(egui::RichText::new(format!("{} unique terms", terms.len()))
+                                                    .size(11.0)
+                                                    .color(egui::Color32::GRAY));
+                                                ui.separator();
+                                                
+                                                // Get top terms for this category with stable sorting
+                                                let mut cat_terms: Vec<_> = terms.iter()
+                                                    .filter_map(|t| word_freq.get(t).map(|f| (t.clone(), *f)))
+                                                    .collect();
+                                                cat_terms.sort_by(|a, b| {
+                                                    match b.1.cmp(&a.1) {
+                                                        std::cmp::Ordering::Equal => a.0.cmp(&b.0),
+                                                        other => other,
+                                                    }
+                                                });
+                                                
+                                                ui.horizontal_wrapped(|ui| {
+                                                    ui.set_max_width(ui.available_width());
+                                                    for (term, freq) in cat_terms.iter().take(12) {
+                                                        let tag = format!("{} ({})", term, freq);
+                                                        ui.label(egui::RichText::new(tag)
+                                                            .size(11.0)
+                                                            .color(secondary_color)
+                                                            .background_color(egui::Color32::from_rgba_unmultiplied(
+                                                                secondary_color.r(),
+                                                                secondary_color.g(),
+                                                                secondary_color.b(),
+                                                                40
+                                                            )));
+                                                    }
+                                                });
+                                            });
+                                            ui.add_space(3.0);
+                                        }
+                                    });
+                            }
+                        });
+                    });
+                });
+            });
         });
     }
 }

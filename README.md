@@ -67,8 +67,7 @@ On startup, the application automatically loads `microfiche.csv` from the curren
 
 ### Stats Tab
 - View total counts for categories, subcategories, concepts, and notes
-- Visual bar chart shows note distribution across categories
-- Themed colors match your selected theme
+- Term co-occurence and pair frequency shows note distribution across categories
 
 ### File Menu
 - **Open**: Import a CSV file
