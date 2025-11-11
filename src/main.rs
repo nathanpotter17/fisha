@@ -648,9 +648,20 @@ impl MicroficheApp {
                     ui.label("Select a subcategory to view its contents");
                 });
             } else {
-                ui.centered_and_justified(|ui| {
-                    ui.label("Select a category from the left panel");
-                });
+                if self.microfiche.categories.is_empty() {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(ui.available_height() / 2.0 - 50.0);
+                        ui.label(egui::RichText::new("No data loaded").size(14.0));
+                        ui.add_space(10.0);
+                        if ui.button(egui::RichText::new("Open File").size(12.0)).clicked() {
+                            self.open_file();
+                        }
+                    });
+                } else {
+                    ui.centered_and_justified(|ui| {
+                        ui.label("Select a category from the left panel");
+                    });
+                }
             }
         });
     }
@@ -1171,7 +1182,8 @@ fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1200.0, 800.0])
-            .with_min_inner_size([800.0, 600.0]),
+            .with_min_inner_size([800.0, 600.0])
+            .with_icon(load_icon()),
         ..Default::default()
     };
     
@@ -1180,4 +1192,32 @@ fn main() -> Result<(), eframe::Error> {
         options,
         Box::new(|cc| Ok(Box::new(MicroficheApp::new(cc)))),
     )
+}
+
+fn load_icon() -> egui::IconData {
+    const ICON_DATA: &str = include_str!("../assets/icon_rgba.txt");
+    
+    let mut lines = ICON_DATA.lines();
+    
+    // Parse dimensions
+    let dims_line = lines.next().expect("Missing dimensions line");
+    let mut dims = dims_line.split(',');
+    let width: u32 = dims.next().unwrap().trim().parse().unwrap();
+    let height: u32 = dims.next().unwrap().trim().parse().unwrap();
+    
+    // Parse RGBA data
+    let rgba_line = lines.next().expect("Missing RGBA data line");
+    let rgba: Vec<u8> = rgba_line
+        .split(',')
+        .map(|s| s.trim().parse().expect("Invalid RGBA value"))
+        .collect();
+    
+    // Verify size
+    assert_eq!(rgba.len(), (width * height * 4) as usize, "RGBA data size mismatch");
+    
+    egui::IconData {
+        rgba,
+        width,
+        height,
+    }
 }
