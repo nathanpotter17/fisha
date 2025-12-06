@@ -10,13 +10,10 @@ Category → Subcategory → Concept → Note
 ```
 
 ## Usage
-```bash
-cargo run --release
-```
 
-or grab the latest release from [Releases]()
+Grab the latest release from [Releases](https://github.com/nathanpotter17/fisha/releases) or build using `cargo`.
 
-Loads `microfiche.csv` from current directory on startup.
+Note: Loads `microfiche.csv` from current directory on startup.
 
 ## CSV Format
 ```csv
