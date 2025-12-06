@@ -9,108 +9,45 @@ Fisha provides a clean, intuitive interface for managing knowledge organized in 
 Category → Subcategory → Concept → Note
 ```
 
-## Features
-
-- **Browse View**: Navigate your knowledge hierarchy with side panels for categories and subcategories
-- **Search**: Full-text search across all fields with inline results
-- **Create**: Add new entries through a guided form interface
-- **Statistics**: Visual dashboard with category distribution bars and hierarchy counts
-- **CSV Import/Export**: Load and save your knowledge base with File menu
-- **Theme Support**: Three professionally designed dark themes (Monokai, Tomorrow Blue Hour, Dark+)
-- **Entry Management**: Edit, delete, or use as template for quick entry creation
-- **Auto-save**: Loads `microfiche.csv` from current directory on startup
-
-## CSV Format
-
-The application expects a CSV file with the following 4 columns:
-
-| Category | Subcategory | Concept | Note |
-|----------|-------------|---------|------|
-| Mathematics | Algebra | Quadratic Formula | x = (-b ± √(b²-4ac))/2a |
-
-**Important**: 
-- Headers must be: `Category`, `Subcategory`, `Concept`, `Note`
-- Multiple notes can exist for the same concept
-- Avoid excessive commas in note content as they're used for CSV field separation
-
 ## Usage
 ```bash
-# Run the application
-cargo run
-
-# Or build and run release version
-cargo build --release
-./target/release/fisha
+cargo run --release
 ```
 
-On startup, the application automatically loads `microfiche.csv` from the current directory if it exists.
+or grab the latest release from [Releases]()
 
-## Controls
+Loads `microfiche.csv` from current directory on startup.
 
-### Browse Tab
-- Click categories in left panel to view subcategories
-- Click subcategories in middle panel to view concepts and notes
-- **Template**: Load category/subcategory/concept to create a new note
-- **Edit**: Load an entry into the Create form for modification
-- **Delete**: Remove the note from the database
+## CSV Format
+```csv
+Category,Subcategory,Concept,Note
+Mathematics,Algebra,Quadratic Formula,x = (-b ± √(b²-4ac))/2a
+```
 
-### Search Tab
-- Enter search terms to find matches across all fields
-- Results show full hierarchy path: Category > Subcategory > Concept
-- Edit, Delete, and Template buttons available for each result
+Headers required. Multiple notes per concept allowed.
 
-### Create Tab
-- Fill in Category, Subcategory, Concept, and Note fields
-- All fields are required
-- Click "Create" to add the entry
-- Form clears automatically after successful creation
+## Views
 
-### Stats Tab
-- View total counts for categories, subcategories, concepts, and notes
-- Term co-occurence and pair frequency shows note distribution across categories
+- **Browse**: Navigate hierarchy via side panels
+- **Search**: Multi-term AND search (all terms must match)
+- **Create**: Add entries (all fields required)
+- **Stats**: Counts and top categories
 
-### File Menu
-- **Open**: Import a CSV file
-- **Save**: Save to current file (or prompt if no file loaded)
-- **Save As**: Export to a new CSV file
+## Actions
 
-### Theme Selector
-- Click "Theme" button in top bar
-- Choose from Monokai, Tomorrow (Blue Hour), or Dark+
-- Theme applies immediately
+| Button | Effect |
+|--------|--------|
+| Template | Pre-fill form with category/subcategory/concept |
+| Edit | Delete entry, load into form |
+| Delete | Remove note |
+
+## Themes
+
+Monokai, Tomorrow Blue, Dark+ — selectable via dropdown.
 
 ## Building
 ```bash
-# Development build
-cargo build
-
-# Release build with optimizations
 cargo build --release
 ```
 
-## System Requirements
-
-- Rust 1.70+
-- Dependencies: `eframe`, `egui`, `csv`, `serde`, `rfd`
-- Cross-platform: Windows, macOS, and Linux
-
-## Data Structure
-
-The application loads CSV data into an in-memory hierarchical structure:
-- Fast navigation and searching
-- Changes are maintained in memory until saved
-- Export back to CSV preserves all data
-
-## Tips
-
-- **Manual Saves**: Remember to save periodically via File → Save
-- **Edit Workflow**: Click "Edit" to modify an entry (deletes original, loads into Create form)
-- **Template Workflow**: Click "Template" to quickly create similar entries with same category/subcategory/concept
-- **Search Performance**: Search is case-insensitive and searches across all text fields
-
-## Example CSV File
-```csv
-Category,Subcategory,Concept,Note
-19th Century Computing,Apollo Project,VCF Midwest 2025,The SAGE Air Defense System - https://www.youtube.com/watch?v=Q8iOfaMd5oY
-19th Century Computing,Apollo Computer,1969 AGC,Light Years Ahead 1969 Apollo Guidance Computer - https://www.youtube.com/watch?v=B1J2RMorJXM
-```
+Requires Rust 1.70+. Dependencies: `iced`, `csv`, `serde`, `rfd`, `tokio`.

@@ -1,10 +1,29 @@
-#![windows_subsystem = "windows"]
+//! Fisha - Knowledge Management Application (iced 0.12, single file)
 
-use eframe::egui;
+use iced::widget::{
+    button, column, container, horizontal_rule, horizontal_space, pick_list, row, scrollable,
+    text, text_input, vertical_rule, vertical_space, Column,
+};
+use iced::{executor, Application, Background, Border, Color, Command, Element, Length, Settings, Theme};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
-use csv::{Reader, Writer, StringRecord};
 use std::error::Error;
+use std::path::Path;
+
+fn main() -> iced::Result {
+    Fisha::run(Settings {
+        window: iced::window::Settings {
+            size: iced::Size::new(1200.0, 800.0),
+            min_size: Some(iced::Size::new(800.0, 600.0)),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+}
+
+// ============================================================================
+// Data Model
+// ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct Concept {
@@ -24,13 +43,8 @@ struct Category {
     subcategories: Vec<Subcategory>,
 }
 
-#[derive(Serialize, Deserialize)]
-struct Microfiche {
-    categories: HashMap<String, Category>,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
-struct FicheRow {
+struct CsvRow {
     #[serde(rename = "Category")]
     category: String,
     #[serde(rename = "Subcategory")]
@@ -41,101 +55,197 @@ struct FicheRow {
     note: String,
 }
 
+#[derive(Debug, Clone, Default)]
+struct Microfiche {
+    categories: HashMap<String, Category>,
+}
+
+#[derive(Debug, Clone)]
+struct SearchResult {
+    category: String,
+    subcategory: String,
+    concept: String,
+    note: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct Stats {
+    categories: usize,
+    subcategories: usize,
+    concepts: usize,
+    notes: usize,
+}
+
 impl Microfiche {
-    fn new() -> Self {
-        Microfiche {
-            categories: HashMap::new(),
-        }
-    }
-    
-    fn from_csv(path: &str) -> Result<Self, Box<dyn Error>> {
-        let mut fiche = Microfiche::new();
-        let mut rdr = Reader::from_path(path)?;
-        
+    fn from_csv<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn Error>> {
+        let mut fiche = Self::default();
+        let mut rdr = csv::Reader::from_path(path)?;
         for result in rdr.deserialize() {
-            let row: FicheRow = result?;
-            fiche.add_row(row);
+            let row: CsvRow = result?;
+            fiche.add_entry(&row.category, &row.subcategory, &row.concept, row.note);
         }
-        
         Ok(fiche)
     }
-    
-    fn to_csv(&self, path: &str) -> Result<(), Box<dyn Error>> {
-        let mut wtr = Writer::from_path(path)?;
-        wtr.write_record(&["Category", "Subcategory", "Concept", "Note"])?;
-        
-        for (cat_name, category) in &self.categories {
+
+    fn to_csv<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn Error>> {
+        let mut wtr = csv::Writer::from_path(path)?;
+        wtr.write_record(["Category", "Subcategory", "Concept", "Note"])?;
+        let mut cat_names: Vec<_> = self.categories.keys().collect();
+        cat_names.sort();
+        for cat_name in cat_names {
+            let category = &self.categories[cat_name];
             for subcat in &category.subcategories {
                 for concept in &subcat.concepts {
                     for note in &concept.notes {
-                        wtr.write_record(&[
-                            &cat_name,
-                            &subcat.name,
-                            &concept.name,
-                            note,
-                        ])?;
+                        wtr.write_record([cat_name, &subcat.name, &concept.name, note])?;
+                    }
+                }
+            }
+        }
+        wtr.flush()?;
+        Ok(())
+    }
+
+    fn add_entry(&mut self, cat: &str, sub: &str, con: &str, note: String) {
+        let category = self.categories.entry(cat.to_string()).or_insert_with(|| Category {
+            name: cat.to_string(),
+            subcategories: Vec::new(),
+        });
+        let subcat = match category.subcategories.iter_mut().find(|s| s.name == sub) {
+            Some(s) => s,
+            None => {
+                category.subcategories.push(Subcategory {
+                    name: sub.to_string(),
+                    concepts: Vec::new(),
+                });
+                category.subcategories.last_mut().unwrap()
+            }
+        };
+        let concept = match subcat.concepts.iter_mut().find(|c| c.name == con) {
+            Some(c) => c,
+            None => {
+                subcat.concepts.push(Concept {
+                    name: con.to_string(),
+                    notes: Vec::new(),
+                });
+                subcat.concepts.last_mut().unwrap()
+            }
+        };
+        concept.notes.push(note);
+    }
+
+    fn delete_note(&mut self, cat: &str, sub: &str, con: &str, note: &str) -> bool {
+        let Some(category) = self.categories.get_mut(cat) else { return false };
+        let Some(subcat) = category.subcategories.iter_mut().find(|s| s.name == sub) else { return false };
+        let Some(concept) = subcat.concepts.iter_mut().find(|c| c.name == con) else { return false };
+        let Some(pos) = concept.notes.iter().position(|n| n == note) else { return false };
+        concept.notes.remove(pos);
+        if concept.notes.is_empty() { subcat.concepts.retain(|c| !c.notes.is_empty()); }
+        if subcat.concepts.is_empty() { category.subcategories.retain(|s| !s.concepts.is_empty()); }
+        if category.subcategories.is_empty() { self.categories.remove(cat); }
+        true
+    }
+
+    fn search(&self, query: &str) -> Vec<SearchResult> {
+        let query_lower = query.to_lowercase();
+        let parts: Vec<&str> = query_lower.split_whitespace().collect();
+        
+        if parts.is_empty() {
+            return Vec::new();
+        }
+        
+        let mut results = Vec::with_capacity(100);
+        
+        // Check for exact category name match
+        for (cat_name, category) in &self.categories {
+            let cat_lower = cat_name.to_lowercase();
+            
+            if parts.len() == 1 && cat_lower == parts[0] {
+                for subcat in &category.subcategories {
+                    for concept in &subcat.concepts {
+                        for note in &concept.notes {
+                            results.push(SearchResult {
+                                category: cat_name.clone(),
+                                subcategory: subcat.name.clone(),
+                                concept: concept.name.clone(),
+                                note: note.clone(),
+                            });
+                        }
+                    }
+                }
+                return results;
+            }
+        }
+        
+        // Check for exact subcategory name match (handles multi-word)
+        let query_joined = parts.join(" ");
+        for (cat_name, category) in &self.categories {
+            for subcat in &category.subcategories {
+                if subcat.name.to_lowercase() == query_joined {
+                    for concept in &subcat.concepts {
+                        for note in &concept.notes {
+                            results.push(SearchResult {
+                                category: cat_name.clone(),
+                                subcategory: subcat.name.clone(),
+                                concept: concept.name.clone(),
+                                note: note.clone(),
+                            });
+                        }
+                    }
+                    return results;
+                }
+            }
+        }
+        
+        // Check for exact concept name match
+        for (cat_name, category) in &self.categories {
+            for subcat in &category.subcategories {
+                for concept in &subcat.concepts {
+                    if concept.name.to_lowercase() == query_joined {
+                        for note in &concept.notes {
+                            results.push(SearchResult {
+                                category: cat_name.clone(),
+                                subcategory: subcat.name.clone(),
+                                concept: concept.name.clone(),
+                                note: note.clone(),
+                            });
+                        }
+                        return results;
                     }
                 }
             }
         }
         
-        wtr.flush()?;
-        Ok(())
-    }
-    
-    fn add_row(&mut self, row: FicheRow) {
-        let category = self.categories.entry(row.category.clone())
-            .or_insert_with(|| Category {
-                name: row.category.clone(),
-                subcategories: Vec::new(),
-            });
-        
-        if !category.subcategories.iter().any(|s| s.name == row.subcategory) {
-            category.subcategories.push(Subcategory {
-                name: row.subcategory.clone(),
-                concepts: Vec::new(),
-            });
-        }
-        let subcat = category.subcategories.iter_mut()
-            .find(|s| s.name == row.subcategory)
-            .unwrap();
-        
-        if !subcat.concepts.iter().any(|c| c.name == row.concept) {
-            subcat.concepts.push(Concept {
-                name: row.concept.clone(),
-                notes: Vec::new(),
-            });
-        }
-        let concept = subcat.concepts.iter_mut()
-            .find(|c| c.name == row.concept)
-            .unwrap();
-        
-        concept.notes.push(row.note);
-    }
-    
-    fn search(&self, query: &str) -> Vec<(String, String, String, String)> {
-        let mut results = Vec::new();
-        let query_lower = query.to_lowercase();
-        
-        if query_lower.is_empty() {
-            return results;
-        }
-        
+        // Content search - ALL terms must match
         for (cat_name, category) in &self.categories {
+            let cat_lower = cat_name.to_lowercase();
+            
             for subcat in &category.subcategories {
+                let sub_lower = subcat.name.to_lowercase();
+                
                 for concept in &subcat.concepts {
+                    let con_lower = concept.name.to_lowercase();
+                    
                     for note in &concept.notes {
-                        let full_text = format!("{} {} {} {}", 
-                            cat_name, subcat.name, concept.name, note)
-                            .to_lowercase();
+                        let note_lower = note.to_lowercase();
                         
-                        if full_text.contains(&query_lower) {
-                            results.push((
-                                cat_name.clone(),
-                                subcat.name.clone(),
-                                concept.name.clone(),
-                                note.clone(),
-                            ));
+                        // Check if ALL parts match somewhere
+                        let all_match = parts.iter().all(|part| {
+                            cat_lower.contains(part) 
+                                || sub_lower.contains(part) 
+                                || con_lower.contains(part) 
+                                || note_lower.contains(part)
+                        });
+                        
+                        if all_match {
+                            results.push(SearchResult {
+                                category: cat_name.clone(),
+                                subcategory: subcat.name.clone(),
+                                concept: concept.name.clone(),
+                                note: note.clone(),
+                            });
+                            
+                            if results.len() >= 200 { return results; }
                         }
                     }
                 }
@@ -144,1080 +254,659 @@ impl Microfiche {
         
         results
     }
-    
-    fn delete_note(&mut self, cat: &str, sub: &str, con: &str, note_content: &str) -> bool {
-        if let Some(category) = self.categories.get_mut(cat) {
-            if let Some(subcat) = category.subcategories.iter_mut().find(|s| s.name == sub) {
-                if let Some(concept) = subcat.concepts.iter_mut().find(|c| c.name == con) {
-                    if let Some(pos) = concept.notes.iter().position(|n| n == note_content) {
-                        concept.notes.remove(pos);
-                        
-                        // Cleanup empty structures
-                        if concept.notes.is_empty() {
-                            subcat.concepts.retain(|c| !c.notes.is_empty());
-                        }
-                        if subcat.concepts.is_empty() {
-                            category.subcategories.retain(|s| !s.concepts.is_empty());
-                        }
-                        if category.subcategories.is_empty() {
-                            self.categories.remove(cat);
-                        }
-                        
-                        return true;
-                    }
-                }
-            }
-        }
-        false
-    }
-    
-    fn stats(&self) -> HashMap<String, usize> {
-        let mut stats = HashMap::new();
-        let mut total_subcats = 0;
-        let mut total_concepts = 0;
-        let mut total_notes = 0;
-        
-        stats.insert("categories".to_string(), self.categories.len());
-        
-        for (_, category) in &self.categories {
-            total_subcats += category.subcategories.len();
+
+    fn stats(&self) -> Stats {
+        let mut s = Stats { categories: self.categories.len(), ..Default::default() };
+        for category in self.categories.values() {
+            s.subcategories += category.subcategories.len();
             for subcat in &category.subcategories {
-                total_concepts += subcat.concepts.len();
+                s.concepts += subcat.concepts.len();
                 for concept in &subcat.concepts {
-                    total_notes += concept.notes.len();
+                    s.notes += concept.notes.len();
                 }
             }
         }
-        
-        stats.insert("subcategories".to_string(), total_subcats);
-        stats.insert("concepts".to_string(), total_concepts);
-        stats.insert("total_notes".to_string(), total_notes);
-        
-        stats
+        s
+    }
+
+    fn sorted_category_names(&self) -> Vec<String> {
+        let mut names: Vec<_> = self.categories.keys().cloned().collect();
+        names.sort();
+        names
     }
 }
 
-struct MicroficheApp {
+// ============================================================================
+// Theme
+// ============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Palette {
+    background: Color,
+    surface: Color,
+    surface_hover: Color,
+    surface_active: Color,
+    border: Color,
+    text_primary: Color,
+    text_secondary: Color,
+    accent: Color,
+    accent_hover: Color,
+    success: Color,
+    warning: Color,
+    error: Color,
+}
+
+const MONOKAI: Palette = Palette {
+    background: Color::from_rgb(0.153, 0.157, 0.133),
+    surface: Color::from_rgb(0.192, 0.196, 0.173),
+    surface_hover: Color::from_rgb(0.235, 0.239, 0.216),
+    surface_active: Color::from_rgb(0.294, 0.298, 0.267),
+    border: Color::from_rgb(0.353, 0.357, 0.322),
+    text_primary: Color::from_rgb(0.973, 0.973, 0.949),
+    text_secondary: Color::from_rgb(0.647, 0.647, 0.627),
+    accent: Color::from_rgb(0.976, 0.149, 0.447),
+    accent_hover: Color::from_rgb(0.400, 0.851, 0.937),
+    success: Color::from_rgb(0.651, 0.886, 0.314),
+    warning: Color::from_rgb(0.902, 0.859, 0.455),
+    error: Color::from_rgb(0.976, 0.149, 0.447),
+};
+
+const TOMORROW_BLUE: Palette = Palette {
+    background: Color::from_rgb(0.000, 0.114, 0.200),
+    surface: Color::from_rgb(0.000, 0.169, 0.278),
+    surface_hover: Color::from_rgb(0.027, 0.216, 0.341),
+    surface_active: Color::from_rgb(0.047, 0.275, 0.451),
+    border: Color::from_rgb(0.067, 0.333, 0.529),
+    text_primary: Color::from_rgb(0.906, 0.910, 0.922),
+    text_secondary: Color::from_rgb(0.600, 0.651, 0.702),
+    accent: Color::from_rgb(0.490, 0.682, 0.776),
+    accent_hover: Color::from_rgb(0.600, 0.780, 0.860),
+    success: Color::from_rgb(0.710, 0.808, 0.659),
+    warning: Color::from_rgb(1.000, 0.800, 0.400),
+    error: Color::from_rgb(1.000, 0.400, 0.400),
+};
+
+const DARK_PLUS: Palette = Palette {
+    background: Color::from_rgb(0.118, 0.118, 0.118),
+    surface: Color::from_rgb(0.145, 0.145, 0.149),
+    surface_hover: Color::from_rgb(0.176, 0.176, 0.176),
+    surface_active: Color::from_rgb(0.235, 0.235, 0.235),
+    border: Color::from_rgb(0.294, 0.294, 0.294),
+    text_primary: Color::from_rgb(0.831, 0.831, 0.831),
+    text_secondary: Color::from_rgb(0.600, 0.600, 0.600),
+    accent: Color::from_rgb(0.306, 0.635, 0.902),
+    accent_hover: Color::from_rgb(0.400, 0.720, 0.950),
+    success: Color::from_rgb(0.353, 0.788, 0.353),
+    warning: Color::from_rgb(0.808, 0.569, 0.471),
+    error: Color::from_rgb(0.957, 0.278, 0.278),
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum FishaTheme {
+    #[default]
+    DarkPlus,
+    Monokai,
+    TomorrowBlue,
+}
+
+impl FishaTheme {
+    const ALL: [Self; 3] = [Self::Monokai, Self::TomorrowBlue, Self::DarkPlus];
+    fn palette(&self) -> Palette {
+        match self {
+            Self::Monokai => MONOKAI,
+            Self::TomorrowBlue => TOMORROW_BLUE,
+            Self::DarkPlus => DARK_PLUS,
+        }
+    }
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Monokai => "Monokai",
+            Self::TomorrowBlue => "Tomorrow Blue",
+            Self::DarkPlus => "Dark+",
+        }
+    }
+}
+
+impl std::fmt::Display for FishaTheme {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
+fn alpha(c: Color, a: f32) -> Color { Color { a, ..c } }
+
+// ============================================================================
+// Style Sheets
+// ============================================================================
+
+struct ContainerStyle(Palette, bool); // bool = is_card
+impl container::StyleSheet for ContainerStyle {
+    type Style = Theme;
+    fn appearance(&self, _: &Self::Style) -> container::Appearance {
+        container::Appearance {
+            background: Some(Background::Color(if self.1 { self.0.surface } else { self.0.background })),
+            text_color: Some(self.0.text_primary),
+            border: if self.1 { Border { color: self.0.border, width: 1.0, radius: 4.0.into() } } else { Border::default() },
+            ..Default::default()
+        }
+    }
+}
+
+struct ButtonStyle(Palette, ButtonKind);
+#[derive(Clone, Copy)]
+enum ButtonKind { Primary, Secondary, Nav(bool), Danger, ListItem(bool) }
+
+impl button::StyleSheet for ButtonStyle {
+    type Style = Theme;
+    fn active(&self, _: &Self::Style) -> button::Appearance {
+        let p = &self.0;
+        let (bg, text, border_color, border_width) = match self.1 {
+            ButtonKind::Primary => (p.accent, p.text_primary, Color::TRANSPARENT, 0.0),
+            ButtonKind::Secondary => (p.surface, p.text_primary, p.border, 1.0),
+            ButtonKind::Nav(sel) => (if sel { p.surface_active } else { Color::TRANSPARENT }, if sel { p.accent } else { p.text_primary }, Color::TRANSPARENT, 0.0),
+            ButtonKind::Danger => (alpha(p.error, 0.2), p.error, p.error, 1.0),
+            ButtonKind::ListItem(sel) => (if sel { alpha(p.accent, 0.2) } else { Color::TRANSPARENT }, p.text_primary, if sel { p.accent } else { Color::TRANSPARENT }, if sel { 1.0 } else { 0.0 }),
+        };
+        button::Appearance {
+            background: Some(Background::Color(bg)),
+            text_color: text,
+            border: Border { color: border_color, width: border_width, radius: 4.0.into() },
+            ..Default::default()
+        }
+    }
+    fn hovered(&self, _: &Self::Style) -> button::Appearance {
+        let p = &self.0;
+        let (bg, text, border_color) = match self.1 {
+            ButtonKind::Primary => (p.accent_hover, p.text_primary, Color::TRANSPARENT),
+            ButtonKind::Secondary => (p.surface_hover, p.text_primary, p.accent),
+            ButtonKind::Nav(_) => (p.surface_hover, p.text_primary, Color::TRANSPARENT),
+            ButtonKind::Danger => (alpha(p.error, 0.4), p.error, p.error),
+            ButtonKind::ListItem(_) => (p.surface_hover, p.text_primary, Color::TRANSPARENT),
+        };
+        button::Appearance {
+            background: Some(Background::Color(bg)),
+            text_color: text,
+            border: Border { color: border_color, width: if matches!(self.1, ButtonKind::Secondary | ButtonKind::Danger) { 1.0 } else { 0.0 }, radius: 4.0.into() },
+            ..Default::default()
+        }
+    }
+    fn pressed(&self, s: &Self::Style) -> button::Appearance {
+        let mut a = self.hovered(s);
+        a.background = Some(Background::Color(self.0.surface_active));
+        a
+    }
+}
+
+struct InputStyle(Palette);
+impl text_input::StyleSheet for InputStyle {
+    type Style = Theme;
+    fn active(&self, _: &Self::Style) -> text_input::Appearance {
+        text_input::Appearance {
+            background: Background::Color(self.0.surface),
+            border: Border { color: self.0.border, width: 1.0, radius: 4.0.into() },
+            icon_color: self.0.text_secondary,
+        }
+    }
+    fn focused(&self, _: &Self::Style) -> text_input::Appearance {
+        text_input::Appearance {
+            background: Background::Color(self.0.surface_hover),
+            border: Border { color: self.0.accent, width: 1.0, radius: 4.0.into() },
+            icon_color: self.0.text_secondary,
+        }
+    }
+    fn hovered(&self, s: &Self::Style) -> text_input::Appearance {
+        let mut a = self.active(s);
+        a.border.color = self.0.accent;
+        a
+    }
+    fn disabled(&self, s: &Self::Style) -> text_input::Appearance { self.active(s) }
+    fn placeholder_color(&self, _: &Self::Style) -> Color { self.0.text_secondary }
+    fn value_color(&self, _: &Self::Style) -> Color { self.0.text_primary }
+    fn selection_color(&self, _: &Self::Style) -> Color { alpha(self.0.accent, 0.3) }
+    fn disabled_color(&self, _: &Self::Style) -> Color { self.0.text_secondary }
+}
+
+struct ScrollStyle(Palette);
+impl scrollable::StyleSheet for ScrollStyle {
+    type Style = Theme;
+    fn active(&self, _: &Self::Style) -> scrollable::Appearance {
+        scrollable::Appearance {
+            container: Default::default(),
+            scrollbar: scrollable::Scrollbar {
+                background: Some(Background::Color(self.0.surface)),
+                border: Border::default(),
+                scroller: scrollable::Scroller { color: self.0.surface_hover, border: Border { radius: 4.0.into(), ..Default::default() } },
+            },
+            gap: None,
+        }
+    }
+    fn hovered(&self, _: &Self::Style, _: bool) -> scrollable::Appearance {
+        let mut a = self.active(&Theme::Dark);
+        a.scrollbar.scroller.color = self.0.surface_active;
+        a
+    }
+}
+
+struct PickStyle(Palette);
+impl pick_list::StyleSheet for PickStyle {
+    type Style = Theme;
+    fn active(&self, _: &Self::Style) -> pick_list::Appearance {
+        pick_list::Appearance {
+            background: Background::Color(self.0.surface),
+            border: Border { color: self.0.border, width: 1.0, radius: 4.0.into() },
+            text_color: self.0.text_primary,
+            placeholder_color: self.0.text_secondary,
+            handle_color: self.0.text_secondary,
+        }
+    }
+    fn hovered(&self, _: &Self::Style) -> pick_list::Appearance {
+        let mut a = self.active(&Theme::Dark);
+        a.border.color = self.0.accent;
+        a.background = Background::Color(self.0.surface_hover);
+        a
+    }
+}
+
+struct MenuStyle(Palette);
+impl iced::overlay::menu::StyleSheet for MenuStyle {
+    type Style = Theme;
+    fn appearance(&self, _: &Self::Style) -> iced::overlay::menu::Appearance {
+        iced::overlay::menu::Appearance {
+            background: Background::Color(self.0.surface),
+            border: Border { color: self.0.border, width: 1.0, radius: 4.0.into() },
+            text_color: self.0.text_primary,
+            selected_background: Background::Color(alpha(self.0.accent, 0.3)),
+            selected_text_color: self.0.accent,
+        }
+    }
+}
+
+// ============================================================================
+// Application
+// ============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ViewMode { #[default] Browse, Search, Create, Stats }
+
+#[derive(Debug, Clone)]
+enum Message {
+    OpenFile, FileOpened(Result<(String, Microfiche), String>),
+    SaveFile, SaveFileAs, FileSaved(Result<String, String>),
+    SetViewMode(ViewMode), SetTheme(FishaTheme),
+    SelectCategory(String), SelectSubcategory(String),
+    SearchQueryChanged(String),
+    FormCategoryChanged(String), FormSubcategoryChanged(String),
+    FormConceptChanged(String), FormNoteChanged(String),
+    SubmitEntry, ClearForm,
+    DeleteNote { category: String, subcategory: String, concept: String, note: String },
+    EditNote { category: String, subcategory: String, concept: String, note: String },
+    UseAsTemplate { category: String, subcategory: String, concept: String },
+}
+
+struct Fisha {
     microfiche: Microfiche,
     current_file: Option<String>,
-    
-    // UI State
-    search_query: String,
-    search_results: Vec<(String, String, String, String)>,
-    
-    // Create form
-    new_category: String,
-    new_subcategory: String,
-    new_concept: String,
-    new_note: String,
-    
-    // Selected for viewing
+    view_mode: ViewMode,
+    theme: FishaTheme,
     selected_category: Option<String>,
     selected_subcategory: Option<String>,
-    selected_concept: Option<String>,
-    
-    // Messages
+    search_query: String,
+    search_results: Vec<SearchResult>,
+    form_category: String,
+    form_subcategory: String,
+    form_concept: String,
+    form_note: String,
     status_message: String,
-    
-    // View mode
-    view_mode: ViewMode,
-    
-    // Theme
-    current_theme: Theme,
-    show_theme_selector: bool,
-
-    // Pagination
-    cooccurrence_page: usize,
-    category_page: usize,
 }
 
-#[derive(PartialEq, Clone, Copy)]
-enum Theme {
-    Monokai,
-    TomorrowBlueHour,
-    DarkPlus,
-}
+impl Application for Fisha {
+    type Executor = executor::Default;
+    type Message = Message;
+    type Theme = Theme;
+    type Flags = ();
 
-impl Theme {
-    fn name(&self) -> &str {
-        match self {
-            Theme::Monokai => "Monokai",
-            Theme::TomorrowBlueHour => "Tomorrow (Blue Hour)",
-            Theme::DarkPlus => "Dark+",
-        }
-    }
-    
-    fn apply(&self, ctx: &egui::Context) {
-        let mut visuals = egui::Visuals::dark();
-        
-        match self {
-            Theme::Monokai => {
-                // Monokai - warm dark theme with purple/pink accents
-                visuals.window_fill = egui::Color32::from_rgb(39, 40, 34);
-                visuals.panel_fill = egui::Color32::from_rgb(39, 40, 34);
-                visuals.faint_bg_color = egui::Color32::from_rgb(49, 50, 44);
-                
-                visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(49, 50, 44);
-                visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(60, 61, 54);
-                visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(75, 76, 68);
-                visuals.widgets.active.bg_fill = egui::Color32::from_rgb(90, 91, 82);
-                
-                visuals.selection.bg_fill = egui::Color32::from_rgb(73, 72, 62);
-                visuals.selection.stroke.color = egui::Color32::from_rgb(249, 38, 114);
-                
-                visuals.override_text_color = Some(egui::Color32::from_rgb(248, 248, 242));
-                visuals.hyperlink_color = egui::Color32::from_rgb(102, 217, 239);
-                visuals.warn_fg_color = egui::Color32::from_rgb(230, 219, 116);
-                visuals.error_fg_color = egui::Color32::from_rgb(249, 38, 114);
-            },
-            Theme::TomorrowBlueHour => {
-                // Tomorrow Night Blue - cool blue theme
-                visuals.window_fill = egui::Color32::from_rgb(0, 29, 51);
-                visuals.panel_fill = egui::Color32::from_rgb(0, 29, 51);
-                visuals.faint_bg_color = egui::Color32::from_rgb(0, 43, 71);
-                
-                visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(0, 43, 71);
-                visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(0, 56, 92);
-                visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(7, 70, 115);
-                visuals.widgets.active.bg_fill = egui::Color32::from_rgb(17, 85, 135);
-                
-                visuals.selection.bg_fill = egui::Color32::from_rgb(0, 72, 119);
-                visuals.selection.stroke.color = egui::Color32::from_rgb(125, 174, 198);
-                
-                visuals.override_text_color = Some(egui::Color32::from_rgb(231, 232, 235));
-                visuals.hyperlink_color = egui::Color32::from_rgb(125, 174, 198);
-                visuals.warn_fg_color = egui::Color32::from_rgb(255, 204, 102);
-                visuals.error_fg_color = egui::Color32::from_rgb(255, 102, 102);
-            },
-            Theme::DarkPlus => {
-                // Dark+ - VS Code default dark theme
-                visuals.window_fill = egui::Color32::from_rgb(30, 30, 30);
-                visuals.panel_fill = egui::Color32::from_rgb(30, 30, 30);
-                visuals.faint_bg_color = egui::Color32::from_rgb(37, 37, 38);
-                
-                visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(45, 45, 45);
-                visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(60, 60, 60);
-                visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(75, 75, 75);
-                visuals.widgets.active.bg_fill = egui::Color32::from_rgb(90, 90, 90);
-                
-                visuals.selection.bg_fill = egui::Color32::from_rgb(38, 79, 120);
-                visuals.selection.stroke.color = egui::Color32::from_rgb(14, 99, 156);
-                
-                visuals.override_text_color = Some(egui::Color32::from_rgb(212, 212, 212));
-                visuals.hyperlink_color = egui::Color32::from_rgb(78, 162, 230);
-                visuals.warn_fg_color = egui::Color32::from_rgb(206, 145, 120);
-                visuals.error_fg_color = egui::Color32::from_rgb(244, 71, 71);
-            },
-        }
-        
-        ctx.set_visuals(visuals);
-    }
-}
-
-#[derive(PartialEq)]
-enum ViewMode {
-    Browse,
-    Search,
-    Create,
-    Stats,
-}
-
-impl Default for MicroficheApp {
-    fn default() -> Self {
-        let microfiche = Microfiche::from_csv("microfiche.csv")
-            .unwrap_or_else(|_| Microfiche::new());
-        
-        let mut app = MicroficheApp {
-            microfiche,
+    fn new(_: ()) -> (Self, Command<Message>) {
+        (Self {
+            microfiche: Microfiche::from_csv("microfiche.csv").unwrap_or_default(),
             current_file: Some("microfiche.csv".to_string()),
-            search_query: String::new(),
-            search_results: Vec::new(),
-            new_category: String::new(),
-            new_subcategory: String::new(),
-            new_concept: String::new(),
-            new_note: String::new(),
+            view_mode: ViewMode::default(),
+            theme: FishaTheme::default(),
             selected_category: None,
             selected_subcategory: None,
-            selected_concept: None,
+            search_query: String::new(),
+            search_results: Vec::new(),
+            form_category: String::new(),
+            form_subcategory: String::new(),
+            form_concept: String::new(),
+            form_note: String::new(),
             status_message: String::new(),
-            view_mode: ViewMode::Browse,
-            current_theme: Theme::Monokai,
-            show_theme_selector: false,
-            cooccurrence_page: 0,
-            category_page: 0,
+        }, Command::none())
+    }
+
+    fn title(&self) -> String { "Fisha".into() }
+
+    fn update(&mut self, msg: Message) -> Command<Message> {
+        match msg {
+            Message::OpenFile => return Command::perform(async {
+                match rfd::AsyncFileDialog::new().add_filter("CSV", &["csv"]).pick_file().await {
+                    Some(f) => {
+                        let p = f.path().to_string_lossy().to_string();
+                        Microfiche::from_csv(&p).map(|m| (p, m)).map_err(|e| e.to_string())
+                    }
+                    None => Err("Cancelled".into())
+                }
+            }, Message::FileOpened),
+            Message::FileOpened(Ok((path, m))) => {
+                self.microfiche = m;
+                self.current_file = Some(path.clone());
+                self.status_message = format!("Loaded: {}", path);
+                self.selected_category = None;
+                self.selected_subcategory = None;
+            }
+            Message::FileOpened(Err(e)) => if e != "Cancelled" { self.status_message = e; },
+            Message::SaveFile => if let Some(p) = self.current_file.clone() {
+                let m = self.microfiche.clone();
+                return Command::perform(async move {
+                    m.to_csv(&p).map(|_| p).map_err(|e| e.to_string())
+                }, Message::FileSaved);
+            } else { return self.update(Message::SaveFileAs); },
+            Message::SaveFileAs => {
+                let m = self.microfiche.clone();
+                return Command::perform(async move {
+                    match rfd::AsyncFileDialog::new().add_filter("CSV", &["csv"]).save_file().await {
+                        Some(f) => {
+                            let p = f.path().to_string_lossy().to_string();
+                            m.to_csv(&p).map(|_| p).map_err(|e| e.to_string())
+                        }
+                        None => Err("Cancelled".into())
+                    }
+                }, Message::FileSaved);
+            }
+            Message::FileSaved(Ok(p)) => { self.current_file = Some(p.clone()); self.status_message = format!("Saved: {}", p); }
+            Message::FileSaved(Err(e)) => if e != "Cancelled" { self.status_message = e; },
+            Message::SetViewMode(m) => self.view_mode = m,
+            Message::SetTheme(t) => self.theme = t,
+            Message::SelectCategory(c) => { self.selected_category = Some(c); self.selected_subcategory = None; }
+            Message::SelectSubcategory(s) => self.selected_subcategory = Some(s),
+            Message::SearchQueryChanged(q) => { self.search_query = q; self.search_results = self.microfiche.search(&self.search_query); }
+            Message::FormCategoryChanged(v) => self.form_category = v,
+            Message::FormSubcategoryChanged(v) => self.form_subcategory = v,
+            Message::FormConceptChanged(v) => self.form_concept = v,
+            Message::FormNoteChanged(v) => self.form_note = v,
+            Message::SubmitEntry => {
+                if self.form_category.is_empty() || self.form_subcategory.is_empty() || self.form_concept.is_empty() || self.form_note.trim().is_empty() {
+                    self.status_message = "All fields required".into();
+                } else {
+                    self.microfiche.add_entry(&self.form_category, &self.form_subcategory, &self.form_concept, self.form_note.trim().into());
+                    self.status_message = "Entry created".into();
+                    self.form_category.clear(); self.form_subcategory.clear(); self.form_concept.clear(); self.form_note.clear();
+                }
+            }
+            Message::ClearForm => { self.form_category.clear(); self.form_subcategory.clear(); self.form_concept.clear(); self.form_note.clear(); }
+            Message::DeleteNote { category, subcategory, concept, note } => {
+                if self.microfiche.delete_note(&category, &subcategory, &concept, &note) {
+                    self.status_message = "Deleted".into();
+                    if self.view_mode == ViewMode::Search { self.search_results = self.microfiche.search(&self.search_query); }
+                    if !self.microfiche.categories.contains_key(&category) { self.selected_category = None; self.selected_subcategory = None; }
+                }
+            }
+            Message::EditNote { category, subcategory, concept, note } => {
+                if self.microfiche.delete_note(&category, &subcategory, &concept, &note) {
+                    self.form_category = category; self.form_subcategory = subcategory; self.form_concept = concept; self.form_note = note;
+                    self.view_mode = ViewMode::Create;
+                    self.status_message = "Edit and submit".into();
+                }
+            }
+            Message::UseAsTemplate { category, subcategory, concept } => {
+                self.form_category = category; self.form_subcategory = subcategory; self.form_concept = concept; self.form_note.clear();
+                self.view_mode = ViewMode::Create;
+                self.status_message = "Template loaded".into();
+            }
+        }
+        Command::none()
+    }
+
+    fn view(&self) -> Element<Message> {
+        let p = self.theme.palette();
+        let content: Element<Message> = match self.view_mode {
+            ViewMode::Browse => self.view_browse(),
+            ViewMode::Search => self.view_search(),
+            ViewMode::Create => self.view_create(),
+            ViewMode::Stats => self.view_stats(),
         };
         
-        app
+        let layout: Element<Message> = column![
+            self.view_top_bar(),
+            container(content).width(Length::Fill).height(Length::Fill),
+            self.view_status_bar()
+        ].into();
+        
+        container(layout)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(iced::theme::Container::Custom(Box::new(ContainerStyle(p, false))))
+            .into()
     }
 }
 
-impl MicroficheApp {
-    fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        Self::default()
+impl Fisha {
+    fn view_top_bar(&self) -> Element<Message> {
+        let p = self.theme.palette();
+        let btn = |label: &str, msg: Message| -> Element<Message> {
+            button(text(label).size(13)).on_press(msg)
+                .style(iced::theme::Button::Custom(Box::new(ButtonStyle(p, ButtonKind::Secondary)))).into()
+        };
+        let nav = |label: &str, mode: ViewMode| -> Element<Message> {
+            button(text(label).size(13)).on_press(Message::SetViewMode(mode))
+                .style(iced::theme::Button::Custom(Box::new(ButtonStyle(p, ButtonKind::Nav(self.view_mode == mode))))).into()
+        };
+        container(row![
+            row![btn("Open", Message::OpenFile), btn("Save", Message::SaveFile), btn("Save As", Message::SaveFileAs)].spacing(4),
+            vertical_rule(1),
+            row![nav("Browse", ViewMode::Browse), nav("Search", ViewMode::Search), nav("Create", ViewMode::Create), nav("Stats", ViewMode::Stats)].spacing(4),
+            horizontal_space(),
+            pick_list(&FishaTheme::ALL[..], Some(self.theme), Message::SetTheme).text_size(13)
+                .style(iced::theme::PickList::Custom(std::rc::Rc::new(PickStyle(p)), std::rc::Rc::new(MenuStyle(p)))),
+        ].spacing(16).padding(8).align_items(iced::Alignment::Center))
+        .width(Length::Fill)
+        .height(Length::Fixed(45.0))
+        .style(iced::theme::Container::Custom(Box::new(ContainerStyle(p, true)))).into()
     }
-    
-    fn save_file(&mut self) {
-        if let Some(ref path) = self.current_file {
-            match self.microfiche.to_csv(path) {
-                Ok(_) => self.status_message = format!("Saved to {}", path),
-                Err(e) => self.status_message = format!("Error saving: {}", e),
-            }
+
+    fn view_status_bar(&self) -> Element<Message> {
+        let p = self.theme.palette();
+        container(row![
+            text(&self.status_message).size(12).style(p.text_secondary),
+            horizontal_space(),
+            text(self.theme.name()).size(12).style(p.text_secondary),
+        ].padding(8))
+        .width(Length::Fill)
+        .height(Length::Fixed(30.0))
+        .style(iced::theme::Container::Custom(Box::new(ContainerStyle(p, true)))).into()
+    }
+
+    fn view_browse(&self) -> Element<Message> {
+        let p = self.theme.palette();
+        let cats = self.microfiche.sorted_category_names();
+        let cat_list: Element<Message> = if cats.is_empty() {
+            text("No categories").size(13).style(p.text_secondary).into()
         } else {
-            self.save_file_as();
-        }
-    }
-    
-    fn save_file_as(&mut self) {
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("CSV", &["csv"])
-            .save_file()
-        {
-            let path_str = path.to_string_lossy().to_string();
-            match self.microfiche.to_csv(&path_str) {
-                Ok(_) => {
-                    self.current_file = Some(path_str.clone());
-                    self.status_message = format!("Saved to {}", path_str);
-                },
-                Err(e) => self.status_message = format!("Error saving: {}", e),
-            }
-        }
-    }
-    
-    fn open_file(&mut self) {
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("CSV", &["csv"])
-            .pick_file()
-        {
-            let path_str = path.to_string_lossy().to_string();
-            match Microfiche::from_csv(&path_str) {
-                Ok(fiche) => {
-                    self.microfiche = fiche;
-                    self.current_file = Some(path_str.clone());
-                    self.status_message = format!("Loaded {}", path_str);
-                },
-                Err(e) => self.status_message = format!("Error loading: {}", e),
-            }
-        }
-    }
-    
-    fn render_top_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.horizontal(|ui| {
-            ui.menu_button("File", |ui| {
-                if ui.button("Open...").clicked() {
-                    self.open_file();
-                    ui.close_menu();
-                }
-                if ui.button("Save").clicked() {
-                    self.save_file();
-                    ui.close_menu();
-                }
-                if ui.button("Save As...").clicked() {
-                    self.save_file_as();
-                    ui.close_menu();
-                }
-            });
-            
-            ui.separator();
-            
-            if ui.selectable_label(self.view_mode == ViewMode::Browse, "Browse").clicked() {
-                self.view_mode = ViewMode::Browse;
-            }
-            if ui.selectable_label(self.view_mode == ViewMode::Search, "Search").clicked() {
-                self.view_mode = ViewMode::Search;
-            }
-            if ui.selectable_label(self.view_mode == ViewMode::Create, "Create").clicked() {
-                self.view_mode = ViewMode::Create;
-            }
-            if ui.selectable_label(self.view_mode == ViewMode::Stats, "Stats").clicked() {
-                self.view_mode = ViewMode::Stats;
-            }
-            
-            ui.separator();
-            
-            if ui.button("Theme").clicked() {
-                self.show_theme_selector = !self.show_theme_selector;
-            }
-            
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(&self.status_message);
-            });
-        });
-        
-        // Theme selector window
-        if self.show_theme_selector {
-            egui::Window::new("Theme Selection")
-                .collapsible(false)
-                .resizable(false)
-                .show(ctx, |ui| {
-                    ui.vertical(|ui| {
-                        if ui.selectable_label(
-                            self.current_theme == Theme::Monokai, 
-                            "Monokai"
-                        ).clicked() {
-                            self.current_theme = Theme::Monokai;
-                            self.current_theme.apply(ctx);
-                            self.show_theme_selector = false;
-                        }
-                        
-                        if ui.selectable_label(
-                            self.current_theme == Theme::TomorrowBlueHour, 
-                            "Tomorrow (Blue Hour)"
-                        ).clicked() {
-                            self.current_theme = Theme::TomorrowBlueHour;
-                            self.current_theme.apply(ctx);
-                            self.show_theme_selector = false;
-                        }
-                        
-                        if ui.selectable_label(
-                            self.current_theme == Theme::DarkPlus, 
-                            "Dark+"
-                        ).clicked() {
-                            self.current_theme = Theme::DarkPlus;
-                            self.current_theme.apply(ctx);
-                            self.show_theme_selector = false;
-                        }
-                    });
-                    
-                    ui.separator();
-                    
-                    if ui.button("Close").clicked() {
-                        self.show_theme_selector = false;
-                    }
-                });
-        }
-    }
-    
-    fn render_browse_view(&mut self, ui: &mut egui::Ui) {
-        egui::SidePanel::left("categories_panel")
-            .resizable(true)
-            .default_width(200.0)
-            .show_inside(ui, |ui| {
-                ui.heading("Categories");
-                ui.separator();
-                
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    let mut categories: Vec<_> = self.microfiche.categories.keys().collect();
-                    categories.sort();
-                    
-                    for cat_name in categories {
-                        let is_selected = self.selected_category.as_ref() == Some(cat_name);
-                        if ui.selectable_label(is_selected, cat_name).clicked() {
-                            self.selected_category = Some(cat_name.clone());
-                            self.selected_subcategory = None;
-                            self.selected_concept = None;
-                        }
-                    }
-                });
-            });
-        
-        if let Some(ref cat_name) = self.selected_category.clone() {
-            if let Some(category) = self.microfiche.categories.get(cat_name) {
-                egui::SidePanel::left("subcategories_panel")
-                    .resizable(true)
-                    .default_width(200.0)
-                    .show_inside(ui, |ui| {
-                        ui.heading("Subcategories");
-                        ui.separator();
-                        
-                        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                            for subcat in &category.subcategories {
-                                let is_selected = self.selected_subcategory.as_ref() == Some(&subcat.name);
-                                if ui.selectable_label(is_selected, &subcat.name).clicked() {
-                                    self.selected_subcategory = Some(subcat.name.clone());
-                                    self.selected_concept = None;
-                                }
-                            }
-                        });
-                    });
-            }
-        }
-        
-        // Collect data before rendering to avoid borrow issues
-        let display_data: Option<(String, String, Vec<(String, Vec<String>)>)> = 
-            if let Some(ref cat_name) = self.selected_category {
-                if let Some(category) = self.microfiche.categories.get(cat_name) {
-                    if let Some(ref sub_name) = self.selected_subcategory {
-                        if let Some(subcat) = category.subcategories.iter().find(|s| &s.name == sub_name) {
-                            let concepts: Vec<_> = subcat.concepts.iter().map(|concept| {
-                                (concept.name.clone(), concept.notes.clone())
-                            }).collect();
-                            Some((cat_name.clone(), sub_name.clone(), concepts))
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-        
-        egui::CentralPanel::default().show_inside(ui, |ui| {
-            if let Some((cat_name, sub_name, concepts)) = display_data {
-                ui.heading(format!("{} > {}", cat_name, sub_name));
-                ui.separator();
-                
-                let mut to_delete: Option<(String, String, String, String)> = None;
-                let mut to_edit: Option<(String, String, String, String)> = None;
-                let mut to_template: Option<(String, String, String)> = None;
-                
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    for (concept_name, notes) in concepts {
-                        ui.group(|ui| {
-                            ui.strong(egui::RichText::new(&concept_name).color(egui::Color32::from_rgb(100, 149, 237)));
-                            ui.separator();
-                            
-                            for note in notes {
-                                ui.group(|ui| {
-                                    ui.vertical(|ui| {
-                                        ui.add(egui::Label::new(&note).wrap());
-                                        ui.horizontal(|ui| {
-                                            if ui.button("Template").clicked() {
-                                                to_template = Some((
-                                                    cat_name.clone(),
-                                                    sub_name.clone(),
-                                                    concept_name.clone(),
-                                                ));
-                                            }
-                                            
-                                            if ui.button("Edit").clicked() {
-                                                to_edit = Some((
-                                                    cat_name.clone(),
-                                                    sub_name.clone(),
-                                                    concept_name.clone(),
-                                                    note.clone(),
-                                                ));
-                                            }
-                                            
-                                            if ui.button("Delete").clicked() {
-                                                to_delete = Some((
-                                                    cat_name.clone(),
-                                                    sub_name.clone(),
-                                                    concept_name.clone(),
-                                                    note.clone(),
-                                                ));
-                                            }
-                                        });
-                                    });
-                                });
-                            }
-                            ui.add_space(5.0);
-                        });
-                        ui.add_space(10.0);
-                    }
-                });
-                
-                // Handle actions after the scroll area
-                if let Some((cat, sub, con, note)) = to_delete {
-                    if self.microfiche.delete_note(&cat, &sub, &con, &note) {
-                        self.status_message = "Entry deleted".to_string();
-                    }
-                }
-                
-                if let Some((cat, sub, con, note)) = to_edit {
-                    // Delete the old entry
-                    if self.microfiche.delete_note(&cat, &sub, &con, &note) {
-                        // Populate the create form with the old data
-                        self.new_category = cat;
-                        self.new_subcategory = sub;
-                        self.new_concept = con;
-                        self.new_note = note;
-                        
-                        // Switch to create view
-                        self.view_mode = ViewMode::Create;
-                        self.status_message = "Entry loaded for editing. Modify and click Create to save.".to_string();
-                    }
-                }
-                
-                if let Some((cat, sub, con)) = to_template {
-                    // Populate the create form but leave note empty
-                    self.new_category = cat;
-                    self.new_subcategory = sub;
-                    self.new_concept = con;
-                    self.new_note.clear();
-                    
-                    // Switch to create view
-                    self.view_mode = ViewMode::Create;
-                    self.status_message = "Template loaded. Add your new note and click Create.".to_string();
-                }
-            } else if self.selected_category.is_some() && self.selected_subcategory.is_none() {
-                ui.centered_and_justified(|ui| {
-                    ui.label("Select a subcategory to view its contents");
-                });
-            } else {
-                if self.microfiche.categories.is_empty() {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(ui.available_height() / 2.0 - 50.0);
-                        ui.label(egui::RichText::new("No data loaded").size(14.0));
-                        ui.add_space(10.0);
-                        if ui.button(egui::RichText::new("Open File").size(12.0)).clicked() {
-                            self.open_file();
-                        }
-                    });
-                } else {
-                    ui.centered_and_justified(|ui| {
-                        ui.label("Select a category from the left panel");
-                    });
-                }
-            }
-        });
-    }
-    
-    fn render_search_view(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Search:");
-            let response = ui.text_edit_singleline(&mut self.search_query);
-            
-            if response.changed() || ui.button("Search").clicked() {
-                self.search_results = self.microfiche.search(&self.search_query);
-            }
-        });
-        
-        ui.separator();
-        
-        ui.label(format!("Found {} results", self.search_results.len()));
-        
-        // Clone results to avoid borrow issues
-        let results = self.search_results.clone();
-        let mut to_delete: Option<(String, String, String, String)> = None;
-        let mut to_edit: Option<(String, String, String, String)> = None;
-        let mut to_template: Option<(String, String, String)> = None;
-        
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            for (cat, sub, con, note) in &results {
-                ui.group(|ui| {
-                    ui.vertical(|ui| {
-                        ui.strong(format!("{} > {} > {}", cat, sub, con));
-                        ui.add(egui::Label::new(note).wrap());
-                        ui.horizontal(|ui| {
-                            if ui.button("Delete").clicked() {
-                                to_delete = Some((cat.clone(), sub.clone(), con.clone(), note.clone()));
-                            }
-                            
-                            if ui.button("Edit").clicked() {
-                                to_edit = Some((cat.clone(), sub.clone(), con.clone(), note.clone()));
-                            }
-                            
-                            if ui.button("Template").clicked() {
-                                to_template = Some((cat.clone(), sub.clone(), con.clone()));
-                            }
-                        });
-                    });
-                });
-                ui.add_space(5.0);
-            }
-        });
-        
-        // Handle actions after the scroll area
-        if let Some((cat, sub, con, note)) = to_delete {
-            if self.microfiche.delete_note(&cat, &sub, &con, &note) {
-                self.search_results = self.microfiche.search(&self.search_query);
-                self.status_message = "Entry deleted".to_string();
-            }
-        }
-        
-        if let Some((cat, sub, con, note)) = to_edit {
-            // Delete the old entry
-            if self.microfiche.delete_note(&cat, &sub, &con, &note) {
-                // Populate the create form with the old data
-                self.new_category = cat;
-                self.new_subcategory = sub;
-                self.new_concept = con;
-                self.new_note = note;
-                
-                // Switch to create view
-                self.view_mode = ViewMode::Create;
-                self.status_message = "Entry loaded for editing. Modify and click Create to save.".to_string();
-                
-                // Refresh search results
-                self.search_results = self.microfiche.search(&self.search_query);
-            }
-        }
-        
-        if let Some((cat, sub, con)) = to_template {
-            // Populate the create form but leave note empty
-            self.new_category = cat;
-            self.new_subcategory = sub;
-            self.new_concept = con;
-            self.new_note.clear();
-            
-            // Switch to create view
-            self.view_mode = ViewMode::Create;
-            self.status_message = "Template loaded. Add your new note and click Create.".to_string();
-        }
-    }
-    
-    fn render_create_view(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Create New Entry");
-        ui.separator();
-        
-        egui::Grid::new("create_grid")
-            .num_columns(2)
-            .spacing([10.0, 10.0])
-            .show(ui, |ui| {
-                ui.label("Category:");
-                ui.add(egui::TextEdit::singleline(&mut self.new_category).desired_width(f32::INFINITY));
-                ui.end_row();
-                
-                ui.label("Subcategory:");
-                ui.add(egui::TextEdit::singleline(&mut self.new_subcategory).desired_width(f32::INFINITY));
-                ui.end_row();
-                
-                ui.label("Concept:");
-                ui.add(egui::TextEdit::singleline(&mut self.new_concept).desired_width(f32::INFINITY));
-                ui.end_row();
-            });
-        
-        ui.separator();
-        ui.label("Note:");
-        ui.add(
-            egui::TextEdit::multiline(&mut self.new_note)
-                .desired_width(f32::INFINITY)
-                .desired_rows(10)
-        );
-        
-        ui.separator();
-        
-        if ui.button("Create").clicked() {
-            if !self.new_category.is_empty() 
-                && !self.new_subcategory.is_empty() 
-                && !self.new_concept.is_empty() 
-                && !self.new_note.is_empty() 
-            {
-                self.microfiche.add_row(FicheRow {
-                    category: self.new_category.clone(),
-                    subcategory: self.new_subcategory.clone(),
-                    concept: self.new_concept.clone(),
-                    note: self.new_note.clone(),
-                });
-                
-                self.status_message = "Entry created successfully".to_string();
-                
-                // Clear form
-                self.new_category.clear();
-                self.new_subcategory.clear();
-                self.new_concept.clear();
-                self.new_note.clear();
-            } else {
-                self.status_message = "All fields are required".to_string();
-            }
-        }
-    }
-    
-    fn render_stats_view(&mut self, ui: &mut egui::Ui) {
-        use std::collections::{HashMap, HashSet};
-        
-        // Helper function to extract words from text
-        fn extract_words(text: &str) -> Vec<String> {
-            let stop_words: HashSet<&str> = [
-                "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
-                "of", "with", "by", "from", "as", "is", "was", "are", "were", "be",
-                "been", "being", "have", "has", "had", "do", "does", "did", "will",
-                "would", "should", "could", "may", "might", "must", "can", "this",
-                "that", "these", "those", "i", "you", "he", "she", "it", "we", "they",
-                "what", "which", "who", "when", "where", "why", "how", "all", "each",
-                "every", "both", "few", "more", "most", "other", "some", "such", "no",
-                "not", "only", "own", "same", "so", "than", "too", "very", "just",
-                "www", "youtube", "https", "com", "github", "http", "watch", "conference",
-                "commit", "src", "main"
-            ].iter().cloned().collect();
-            
-            text.to_lowercase()
-                .split(|c: char| !c.is_alphanumeric())
-                .filter(|w| w.len() > 2 && !stop_words.contains(w))
-                .map(|w| w.to_string())
-                .collect()
-        }
-        
-        // Analyze all text content
-        let mut word_freq: HashMap<String, usize> = HashMap::new();
-        let mut category_terms: HashMap<String, HashSet<String>> = HashMap::new();
-        let mut term_categories: HashMap<String, HashSet<String>> = HashMap::new();
-        let mut co_occurrences: HashMap<(String, String), usize> = HashMap::new();
-        
-        for (cat_name, category) in &self.microfiche.categories {
-            let mut cat_words = HashSet::new();
-            
-            for subcat in &category.subcategories {
-                for concept in &subcat.concepts {
-                    // Extract words from concept name
-                    for word in extract_words(&concept.name) {
-                        *word_freq.entry(word.clone()).or_insert(0) += 1;
-                        cat_words.insert(word.clone());
-                        term_categories.entry(word.clone())
-                            .or_insert_with(HashSet::new)
-                            .insert(cat_name.clone());
-                    }
-                    
-                    // Extract words from all notes
-                    for note in &concept.notes {
-                        let words = extract_words(note);
-                        for word in &words {
-                            *word_freq.entry(word.clone()).or_insert(0) += 1;
-                            cat_words.insert(word.clone());
-                            term_categories.entry(word.clone())
-                                .or_insert_with(HashSet::new)
-                                .insert(cat_name.clone());
-                        }
-                        
-                        // Calculate co-occurrences
-                        for i in 0..words.len() {
-                            for j in (i + 1)..words.len() {
-                                if words[i] != words[j] {
-                                    let pair = if words[i] < words[j] {
-                                        (words[i].clone(), words[j].clone())
-                                    } else {
-                                        (words[j].clone(), words[i].clone())
-                                    };
-                                    *co_occurrences.entry(pair).or_insert(0) += 1;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            
-            category_terms.insert(cat_name.clone(), cat_words);
-        }
-        
-        // Get top co-occurrences with stable sorting
-        let mut top_cooccur: Vec<_> = co_occurrences.iter()
-            .map(|(pair, count)| (pair.clone(), *count))
-            .collect();
-        top_cooccur.sort_by(|a, b| {
-            match b.1.cmp(&a.1) {
-                std::cmp::Ordering::Equal => a.0.cmp(&b.0),
-                other => other,
-            }
-        });
-        
-        // Pagination constants
-        const ITEMS_PER_PAGE: usize = 10;
-        let total_cooccur = top_cooccur.len();
-        let total_cooccur_pages = (total_cooccur + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE;
-        
-        let stats = self.microfiche.stats();
-        let visuals = ui.ctx().style().visuals.clone();
-        let accent_color = visuals.hyperlink_color;
-        let secondary_color = visuals.selection.stroke.color;
-        let tertiary_color = visuals.warn_fg_color;
-        let error_color = visuals.error_fg_color;
-        
-        // Main container
-        ui.vertical(|ui| {
-            // Header
-            ui.heading("Knowledge Statistics & Word Associations");
-            ui.separator();
-            ui.add_space(5.0);
-            
-            // Overview panel - this establishes our width
-            ui.group(|ui| {
-                ui.set_width(ui.available_width());
-                ui.heading("Overview");
-                ui.separator();
-                ui.add_space(5.0);
-                
-                egui::Grid::new("hierarchy_grid")
-                    .num_columns(2)
-                    .spacing([20.0, 10.0])
-                    .striped(true)
-                    .min_col_width(ui.available_width() / 2.0 - 10.0)
-                    .show(ui, |ui| {
-                        ui.label(egui::RichText::new("Categories:").strong());
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(egui::RichText::new(stats.get("categories").unwrap_or(&0).to_string())
-                                .strong().size(15.0).color(accent_color));
-                        });
-                        ui.end_row();
-                        
-                        ui.label(egui::RichText::new("Subcategories:").strong());
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(egui::RichText::new(stats.get("subcategories").unwrap_or(&0).to_string())
-                                .size(15.0).color(secondary_color));
-                        });
-                        ui.end_row();
-                        
-                        ui.label(egui::RichText::new("Concepts:").strong());
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(egui::RichText::new(stats.get("concepts").unwrap_or(&0).to_string())
-                                .size(15.0).color(tertiary_color));
-                        });
-                        ui.end_row();
-                        
-                        ui.label(egui::RichText::new("Total Notes:").strong());
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(egui::RichText::new(stats.get("total_notes").unwrap_or(&0).to_string())
-                                .strong().size(15.0).color(error_color));
-                        });
-                        ui.end_row();
-                        
-                        ui.label(egui::RichText::new("Unique Terms:").strong());
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(egui::RichText::new(word_freq.len().to_string())
-                                .size(15.0).color(accent_color));
-                        });
-                        ui.end_row();
-                    });
-            });
-            
-            ui.add_space(10.0);
-            
-            // Calculate available height for the two panels
-            let available_height = ui.available_height() - 20.0;
-            let total_width = ui.available_width();
-            let panel_spacing = 10.0;
-            let panel_width = (total_width - panel_spacing) / 2.0;
-            
-            // Side by side panels - using columns for exact sizing
-            ui.columns(2, |columns| {
-                // Left panel - Term Co-occurrence
-                columns[0].vertical(|ui| {
-                    ui.set_height(available_height);
-                    
-                    ui.group(|ui| {
-                        ui.set_width(ui.available_width());
-                        ui.set_height(available_height);
-                        
-                        ui.vertical(|ui| {
-                            ui.heading("Term Co-occurrences");
-                            ui.label("Pairs appearing together");
-                            
-                            if top_cooccur.is_empty() {
-                                ui.separator();
-                                ui.centered_and_justified(|ui| {
-                                    ui.label(egui::RichText::new("No co-occurrences found")
-                                        .size(14.0).color(egui::Color32::GRAY));
-                                });
-                            } else {
-                                ui.separator();
-                                
-                                // Pagination controls
-                                ui.horizontal(|ui| {
-                                    if ui.button("◀ Prev").clicked() && self.cooccurrence_page > 0 {
-                                        self.cooccurrence_page -= 1;
-                                    }
-                                    ui.label(format!("Page {} / {}", self.cooccurrence_page + 1, total_cooccur_pages.max(1)));
-                                    if ui.button("Next ▶").clicked() && self.cooccurrence_page < total_cooccur_pages.saturating_sub(1) {
-                                        self.cooccurrence_page += 1;
-                                    }
-                                });
-                                
-                                ui.separator();
-                                
-                                // Clamp page number
-                                if self.cooccurrence_page >= total_cooccur_pages {
-                                    self.cooccurrence_page = total_cooccur_pages.saturating_sub(1);
-                                }
-                                
-                                let start_idx = self.cooccurrence_page * ITEMS_PER_PAGE;
-                                let end_idx = (start_idx + ITEMS_PER_PAGE).min(total_cooccur);
-                                
-                                egui::ScrollArea::vertical()
-                                    .id_source("cooccurrence_scroll")
-                                    .auto_shrink([false, false])
-                                    .show(ui, |ui| {
-                                        for ((term1, term2), count) in &top_cooccur[start_idx..end_idx] {
-                                            ui.group(|ui| {
-                                                ui.set_width(ui.available_width());
-                                                ui.horizontal(|ui| {
-                                                    ui.strong(egui::RichText::new(term1.as_str()).color(accent_color));
-                                                    ui.label("↔");
-                                                    ui.strong(egui::RichText::new(term2.as_str()).color(secondary_color));
-                                                });
-                                                ui.label(egui::RichText::new(format!("{} occurrences", count))
-                                                    .size(11.0)
-                                                    .color(tertiary_color));
-                                                
-                                                // Show shared categories in a compact way
-                                                let mut pair_categories: HashSet<String> = HashSet::new();
-                                                if let Some(cats1) = term_categories.get(term1) {
-                                                    if let Some(cats2) = term_categories.get(term2) {
-                                                        pair_categories = cats1.intersection(cats2).cloned().collect();
-                                                    }
-                                                }
-                                                
-                                                if !pair_categories.is_empty() {
-                                                    let mut cat_list: Vec<_> = pair_categories.iter().collect();
-                                                    cat_list.sort();
-                                                    let cat_display = cat_list.iter().take(3)
-                                                        .map(|s| s.as_str())
-                                                        .collect::<Vec<_>>()
-                                                        .join(", ");
-                                                    ui.label(egui::RichText::new(cat_display)
-                                                        .size(10.0)
-                                                        .color(egui::Color32::GRAY));
-                                                }
-                                            });
-                                            ui.add_space(3.0);
-                                        }
-                                    });
-                            }
-                        });
-                    });
-                });
-                
-                // Right panel - Category-Term Distribution
-                columns[1].vertical(|ui| {
-                    ui.set_height(available_height);
-                    
-                    ui.group(|ui| {
-                        ui.set_width(ui.available_width());
-                        ui.set_height(available_height);
-                        
-                        ui.vertical(|ui| {
-                            ui.heading("Category-Term Distribution");
-                            ui.label("Top terms per category");
-                            
-                            if category_terms.is_empty() {
-                                ui.separator();
-                                ui.centered_and_justified(|ui| {
-                                    ui.label(egui::RichText::new("No categories yet")
-                                        .size(14.0).color(egui::Color32::GRAY));
-                                });
-                            } else {
-                                ui.separator();
-                                
-                                let mut sorted_cats: Vec<_> = category_terms.iter().collect();
-                                sorted_cats.sort_by(|a, b| a.0.cmp(b.0));
-                                
-                                let total_cats = sorted_cats.len();
-                                let total_cat_pages = (total_cats + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE;
-                                
-                                // Pagination controls
-                                ui.horizontal(|ui| {
-                                    if ui.button("◀ Prev").clicked() && self.category_page > 0 {
-                                        self.category_page -= 1;
-                                    }
-                                    ui.label(format!("Page {} / {}", self.category_page + 1, total_cat_pages.max(1)));
-                                    if ui.button("Next ▶").clicked() && self.category_page < total_cat_pages.saturating_sub(1) {
-                                        self.category_page += 1;
-                                    }
-                                });
-                                
-                                ui.separator();
-                                
-                                // Clamp page number
-                                if self.category_page >= total_cat_pages {
-                                    self.category_page = total_cat_pages.saturating_sub(1);
-                                }
-                                
-                                let start_idx = self.category_page * ITEMS_PER_PAGE;
-                                let end_idx = (start_idx + ITEMS_PER_PAGE).min(total_cats);
-                                
-                                egui::ScrollArea::vertical()
-                                    .id_source("category_terms_scroll")
-                                    .auto_shrink([false, false])
-                                    .show(ui, |ui| {
-                                        for (cat_name, terms) in &sorted_cats[start_idx..end_idx] {
-                                            ui.group(|ui| {
-                                                ui.set_width(ui.available_width());
-                                                ui.strong(egui::RichText::new(cat_name.as_str()).color(accent_color));
-                                                ui.label(egui::RichText::new(format!("{} unique terms", terms.len()))
-                                                    .size(11.0)
-                                                    .color(egui::Color32::GRAY));
-                                                ui.separator();
-                                                
-                                                // Get top terms for this category with stable sorting
-                                                let mut cat_terms: Vec<_> = terms.iter()
-                                                    .filter_map(|t| word_freq.get(t).map(|f| (t.clone(), *f)))
-                                                    .collect();
-                                                cat_terms.sort_by(|a, b| {
-                                                    match b.1.cmp(&a.1) {
-                                                        std::cmp::Ordering::Equal => a.0.cmp(&b.0),
-                                                        other => other,
-                                                    }
-                                                });
-                                                
-                                                ui.horizontal_wrapped(|ui| {
-                                                    ui.set_max_width(ui.available_width());
-                                                    for (term, freq) in cat_terms.iter().take(12) {
-                                                        let tag = format!("{} ({})", term, freq);
-                                                        ui.label(egui::RichText::new(tag)
-                                                            .size(11.0)
-                                                            .color(secondary_color)
-                                                            .background_color(egui::Color32::from_rgba_unmultiplied(
-                                                                secondary_color.r(),
-                                                                secondary_color.g(),
-                                                                secondary_color.b(),
-                                                                40
-                                                            )));
-                                                    }
-                                                });
-                                            });
-                                            ui.add_space(3.0);
-                                        }
-                                    });
-                            }
-                        });
-                    });
-                });
-            });
-        });
-    }
-}
+            Column::with_children(cats.iter().map(|n| {
+                let sel = self.selected_category.as_ref() == Some(n);
+                button(text(n).size(13)).on_press(Message::SelectCategory(n.clone())).width(Length::Fill)
+                    .style(iced::theme::Button::Custom(Box::new(ButtonStyle(p, ButtonKind::ListItem(sel))))).into()
+            }).collect::<Vec<_>>()).spacing(2).into()
+        };
+        let cat_panel = container(column![
+            text("Categories").size(14).style(p.accent), horizontal_rule(1),
+            scrollable(container(cat_list).padding(4)).height(Length::Fill)
+                .style(iced::theme::Scrollable::Custom(Box::new(ScrollStyle(p)))),
+        ].spacing(8).padding(12)).width(200).height(Length::Fill)
+            .style(iced::theme::Container::Custom(Box::new(ContainerStyle(p, true))));
 
-impl eframe::App for MicroficheApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.current_theme.apply(ctx);
-        
-        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            self.render_top_bar(ui, ctx);
-        });
-        
-        egui::CentralPanel::default().show(ctx, |ui| {
-            match self.view_mode {
-                ViewMode::Browse => self.render_browse_view(ui),
-                ViewMode::Search => self.render_search_view(ui),
-                ViewMode::Create => self.render_create_view(ui),
-                ViewMode::Stats => self.render_stats_view(ui),
+        let sub_panel: Element<Message> = if let Some(cat_name) = &self.selected_category {
+            if let Some(cat) = self.microfiche.categories.get(cat_name) {
+                let sub_list: Vec<Element<Message>> = cat.subcategories.iter().map(|s| {
+                    let sel = self.selected_subcategory.as_ref() == Some(&s.name);
+                    button(text(&s.name).size(13)).on_press(Message::SelectSubcategory(s.name.clone())).width(Length::Fill)
+                        .style(iced::theme::Button::Custom(Box::new(ButtonStyle(p, ButtonKind::ListItem(sel))))).into()
+                }).collect();
+                container(column![
+                    text("Subcategories").size(14).style(p.accent), horizontal_rule(1),
+                    scrollable(Column::with_children(sub_list).spacing(2).padding(4)).height(Length::Fill)
+                        .style(iced::theme::Scrollable::Custom(Box::new(ScrollStyle(p)))),
+                ].spacing(8).padding(12)).width(200).height(Length::Fill)
+                    .style(iced::theme::Container::Custom(Box::new(ContainerStyle(p, true)))).into()
+            } else { horizontal_space().into() }
+        } else { horizontal_space().into() };
+
+        let main: Element<Message> = match (&self.selected_category, &self.selected_subcategory) {
+            (Some(cn), Some(sn)) => {
+                if let Some(cat) = self.microfiche.categories.get(cn) {
+                    if let Some(sub) = cat.subcategories.iter().find(|s| &s.name == sn) {
+                        let cards: Vec<Element<Message>> = sub.concepts.iter().map(|c| self.view_concept(cn, sn, c)).collect();
+                        column![
+                            text(format!("{} > {}", cn, sn)).size(16).style(p.accent), horizontal_rule(1),
+                            scrollable(Column::with_children(cards).spacing(12).padding(8)).height(Length::Fill)
+                                .style(iced::theme::Scrollable::Custom(Box::new(ScrollStyle(p)))),
+                        ].spacing(8).into()
+                    } else { self.empty_state("Not found") }
+                } else { self.empty_state("Not found") }
             }
-        });
+            (Some(_), None) => self.empty_state("Select subcategory"),
+            _ => if self.microfiche.categories.is_empty() {
+                column![vertical_space(), text("No data").size(16).style(p.text_secondary), vertical_space().height(16),
+                    button(text("Open File").size(14)).on_press(Message::OpenFile)
+                        .style(iced::theme::Button::Custom(Box::new(ButtonStyle(p, ButtonKind::Primary)))), vertical_space(),
+                ].align_items(iced::Alignment::Center).width(Length::Fill).height(Length::Fill).into()
+            } else { self.empty_state("Select category") }
+        };
+
+        row![cat_panel, sub_panel, container(main).width(Length::Fill).height(Length::Fill).padding(12)
+            .style(iced::theme::Container::Custom(Box::new(ContainerStyle(p, true))))
+        ].spacing(8).padding(8).height(Length::Fill).into()
     }
-}
 
-fn main() -> Result<(), eframe::Error> {
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1200.0, 800.0])
-            .with_min_inner_size([800.0, 600.0])
-            .with_icon(load_icon()),
-        ..Default::default()
-    };
-    
-    eframe::run_native(
-        "Fisha GUI",
-        options,
-        Box::new(|cc| Ok(Box::new(MicroficheApp::new(cc)))),
-    )
-}
+    fn view_concept(&self, cat: &str, sub: &str, concept: &Concept) -> Element<Message> {
+        let p = self.theme.palette();
+        let notes: Vec<Element<Message>> = concept.notes.iter().map(|n| {
+            let (c1, s1, co1) = (cat.to_string(), sub.to_string(), concept.name.clone());
+            let (c2, s2, co2, n2) = (c1.clone(), s1.clone(), co1.clone(), n.clone());
+            let (c3, s3, co3, n3) = (c1.clone(), s1.clone(), co1.clone(), n.clone());
+            container(column![
+                text(n).size(13), vertical_space().height(8),
+                row![
+                    button(text("Template").size(11)).on_press(Message::UseAsTemplate { category: c1, subcategory: s1, concept: co1 })
+                        .style(iced::theme::Button::Custom(Box::new(ButtonStyle(p, ButtonKind::Secondary)))),
+                    button(text("Edit").size(11)).on_press(Message::EditNote { category: c2, subcategory: s2, concept: co2, note: n2 })
+                        .style(iced::theme::Button::Custom(Box::new(ButtonStyle(p, ButtonKind::Secondary)))),
+                    button(text("Delete").size(11)).on_press(Message::DeleteNote { category: c3, subcategory: s3, concept: co3, note: n3 })
+                        .style(iced::theme::Button::Custom(Box::new(ButtonStyle(p, ButtonKind::Danger)))),
+                ].spacing(8),
+            ].padding(8)).style(iced::theme::Container::Custom(Box::new(ContainerStyle(p, true)))).into()
+        }).collect();
+        container(column![
+            text(&concept.name).size(14).style(p.accent), horizontal_rule(1),
+            Column::with_children(notes).spacing(8),
+        ].spacing(8).padding(8)).style(iced::theme::Container::Custom(Box::new(ContainerStyle(p, true)))).into()
+    }
 
-fn load_icon() -> egui::IconData {
-    const ICON_DATA: &str = include_str!("../assets/icon_rgba.txt");
-    
-    let mut lines = ICON_DATA.lines();
-    
-    // Parse dimensions
-    let dims_line = lines.next().expect("Missing dimensions line");
-    let mut dims = dims_line.split(',');
-    let width: u32 = dims.next().unwrap().trim().parse().unwrap();
-    let height: u32 = dims.next().unwrap().trim().parse().unwrap();
-    
-    // Parse RGBA data
-    let rgba_line = lines.next().expect("Missing RGBA data line");
-    let rgba: Vec<u8> = rgba_line
-        .split(',')
-        .map(|s| s.trim().parse().expect("Invalid RGBA value"))
-        .collect();
-    
-    // Verify size
-    assert_eq!(rgba.len(), (width * height * 4) as usize, "RGBA data size mismatch");
-    
-    egui::IconData {
-        rgba,
-        width,
-        height,
+    fn view_search(&self) -> Element<Message> {
+        let p = self.theme.palette();
+        let results: Vec<Element<Message>> = self.search_results.iter().map(|r| {
+            let (c1, s1, co1) = (r.category.clone(), r.subcategory.clone(), r.concept.clone());
+            let (c2, s2, co2, n2) = (c1.clone(), s1.clone(), co1.clone(), r.note.clone());
+            let (c3, s3, co3, n3) = (c1.clone(), s1.clone(), co1.clone(), r.note.clone());
+            container(column![
+                text(format!("{} > {} > {}", r.category, r.subcategory, r.concept)).size(12).style(p.accent),
+                text(&r.note).size(13), vertical_space().height(8),
+                row![
+                    button(text("Template").size(11)).on_press(Message::UseAsTemplate { category: c1, subcategory: s1, concept: co1 })
+                        .style(iced::theme::Button::Custom(Box::new(ButtonStyle(p, ButtonKind::Secondary)))),
+                    button(text("Edit").size(11)).on_press(Message::EditNote { category: c2, subcategory: s2, concept: co2, note: n2 })
+                        .style(iced::theme::Button::Custom(Box::new(ButtonStyle(p, ButtonKind::Secondary)))),
+                    button(text("Delete").size(11)).on_press(Message::DeleteNote { category: c3, subcategory: s3, concept: co3, note: n3 })
+                        .style(iced::theme::Button::Custom(Box::new(ButtonStyle(p, ButtonKind::Danger)))),
+                ].spacing(8),
+            ].spacing(4).padding(12)).style(iced::theme::Container::Custom(Box::new(ContainerStyle(p, true)))).into()
+        }).collect();
+        container(column![
+            row![text("Search:").size(14), text_input("Type to search...", &self.search_query).on_input(Message::SearchQueryChanged)
+                .style(iced::theme::TextInput::Custom(Box::new(InputStyle(p)))).width(Length::Fill)].spacing(12).align_items(iced::Alignment::Center),
+            vertical_space().height(8),
+            text(format!("Found {} results", self.search_results.len())).size(13).style(p.text_secondary),
+            horizontal_rule(1),
+            scrollable(Column::with_children(results).spacing(8).padding(8)).height(Length::Fill)
+                .style(iced::theme::Scrollable::Custom(Box::new(ScrollStyle(p)))),
+        ].spacing(8).padding(16)).width(Length::Fill).height(Length::Fill)
+            .style(iced::theme::Container::Custom(Box::new(ContainerStyle(p, false)))).into()
+    }
+
+    fn view_create(&self) -> Element<Message> {
+        let p = self.theme.palette();
+        let field = |label: &str, val: &str, msg: fn(String) -> Message| -> Element<Message> {
+            column![text(label).size(13).style(p.text_secondary),
+                text_input("", val).on_input(msg).style(iced::theme::TextInput::Custom(Box::new(InputStyle(p))))
+            ].spacing(4).into()
+        };
+        container(scrollable(container(column![
+            text("Create New Entry").size(18).style(p.accent), vertical_space().height(16),
+            field("Category", &self.form_category, Message::FormCategoryChanged),
+            field("Subcategory", &self.form_subcategory, Message::FormSubcategoryChanged),
+            field("Concept", &self.form_concept, Message::FormConceptChanged),
+            field("Note", &self.form_note, Message::FormNoteChanged),
+            vertical_space().height(16),
+            row![
+                button(text("Create").size(14)).on_press(Message::SubmitEntry)
+                    .style(iced::theme::Button::Custom(Box::new(ButtonStyle(p, ButtonKind::Primary)))),
+                button(text("Clear").size(14)).on_press(Message::ClearForm)
+                    .style(iced::theme::Button::Custom(Box::new(ButtonStyle(p, ButtonKind::Secondary)))),
+            ].spacing(12),
+        ].spacing(12).max_width(600)).padding(24).center_x()).height(Length::Fill)
+            .style(iced::theme::Scrollable::Custom(Box::new(ScrollStyle(p)))))
+            .width(Length::Fill).height(Length::Fill)
+            .style(iced::theme::Container::Custom(Box::new(ContainerStyle(p, false)))).into()
+    }
+
+    fn view_stats(&self) -> Element<Message> {
+        let p = self.theme.palette();
+        let s = self.microfiche.stats();
+        let stat = |label: &str, val: usize, color: Color| -> Element<Message> {
+            row![text(label).size(14).width(Length::FillPortion(1)), text(val.to_string()).size(16).style(color).width(Length::FillPortion(1))].padding(8).into()
+        };
+        let overview = container(column![
+            text("Overview").size(16).style(p.accent), horizontal_rule(1),
+            stat("Categories", s.categories, p.accent),
+            stat("Subcategories", s.subcategories, p.warning),
+            stat("Concepts", s.concepts, p.success),
+            stat("Total Notes", s.notes, p.error),
+        ].spacing(4).padding(16)).style(iced::theme::Container::Custom(Box::new(ContainerStyle(p, true))));
+
+        let mut cat_stats: Vec<_> = self.microfiche.categories.iter().map(|(n, c)| {
+            let notes: usize = c.subcategories.iter().flat_map(|s| &s.concepts).map(|c| c.notes.len()).sum();
+            (n.clone(), c.subcategories.len(), notes)
+        }).collect();
+        cat_stats.sort_by(|a, b| b.2.cmp(&a.2));
+        let cat_rows: Vec<Element<Message>> = cat_stats.iter().take(10).map(|(n, subs, notes)| {
+            row![text(n).size(13).width(Length::FillPortion(2)),
+                text(format!("{} subs", subs)).size(12).style(p.text_secondary).width(Length::FillPortion(1)),
+                text(format!("{} notes", notes)).size(12).style(p.accent).width(Length::FillPortion(1)),
+            ].padding(4).into()
+        }).collect();
+        let breakdown = container(column![
+            text("Top Categories").size(16).style(p.accent), horizontal_rule(1),
+            Column::with_children(cat_rows).spacing(2),
+        ].spacing(8).padding(16)).style(iced::theme::Container::Custom(Box::new(ContainerStyle(p, true))));
+
+        container(scrollable(column![overview, vertical_space().height(16), breakdown].spacing(8).padding(16).max_width(800))
+            .height(Length::Fill).style(iced::theme::Scrollable::Custom(Box::new(ScrollStyle(p)))))
+            .width(Length::Fill).height(Length::Fill).center_x()
+            .style(iced::theme::Container::Custom(Box::new(ContainerStyle(p, false)))).into()
+    }
+
+    fn empty_state(&self, msg: &str) -> Element<Message> {
+        let p = self.theme.palette();
+        container(text(msg).size(14).style(p.text_secondary))
+            .width(Length::Fill).height(Length::Fill).center_x().center_y().into()
     }
 }
