@@ -844,7 +844,7 @@ impl Fisha {
             column![
                 text("Categories").size(14).style(p.accent),
                 horizontal_rule(1).style(iced::theme::Rule::Custom(Box::new(RuleStyle(p)))),
-                scrollable(container(cat_list).padding(8))
+                scrollable(container(cat_list).padding([8, 12, 8, 8]))
                     .height(Length::Fill)
                     .style(iced::theme::Scrollable::Custom(Box::new(ScrollStyle(p)))),
             ]
@@ -872,7 +872,7 @@ impl Fisha {
                     column![
                         text("Subcategories").size(14).style(p.accent),
                         horizontal_rule(1).style(iced::theme::Rule::Custom(Box::new(RuleStyle(p)))),
-                        scrollable(Column::with_children(sub_list).spacing(4).padding(8))
+                        scrollable(Column::with_children(sub_list).spacing(4).padding([8, 12, 8, 8]))
                             .height(Length::Fill)
                             .style(iced::theme::Scrollable::Custom(Box::new(ScrollStyle(p)))),
                     ]
@@ -902,7 +902,7 @@ impl Fisha {
                         column![
                             text(format!("{} / {}", cn, sn)).size(16).style(p.accent),
                             horizontal_rule(1).style(iced::theme::Rule::Custom(Box::new(RuleStyle(p)))),
-                            scrollable(Column::with_children(cards).spacing(12).padding(8))
+                            scrollable(Column::with_children(cards).spacing(12).padding([8, 12, 8, 8]))
                                 .height(Length::Fill)
                                 .style(iced::theme::Scrollable::Custom(Box::new(ScrollStyle(p)))),
                         ]
@@ -962,7 +962,7 @@ impl Fisha {
             
             container(
                 column![
-                    text(note).size(14).style(p.text_secondary),
+                    text(note).size(14).style(p.text_secondary).width(Length::Fill),
                     vertical_space().height(8),
                     row![
                         button(text("Template").size(12))
@@ -980,7 +980,9 @@ impl Fisha {
                     ].spacing(8),
                 ]
                 .padding(12)
+                .width(Length::Fill)
             )
+            .width(Length::Fill)
             .style(iced::theme::Container::Custom(Box::new(ContainerStyle(p, ContainerKind::Card))))
             .into()
         }).collect();
@@ -990,11 +992,13 @@ impl Fisha {
                 text(&concept.name).size(16).style(p.text_primary),
                 text(format!("{} notes", concept.notes.len())).size(12).style(p.text_muted),
                 horizontal_rule(1).style(iced::theme::Rule::Custom(Box::new(RuleStyle(p)))),
-                Column::with_children(notes).spacing(8),
+                Column::with_children(notes).spacing(8).width(Length::Fill),
             ]
             .spacing(8)
             .padding(16)
+            .width(Length::Fill)
         )
+        .width(Length::Fill)
         .style(iced::theme::Container::Custom(Box::new(ContainerStyle(p, ContainerKind::Card))))
         .into()
     }
@@ -1012,7 +1016,7 @@ impl Fisha {
                     text(format!("{} / {} / {}", r.category, r.subcategory, r.concept))
                         .size(12)
                         .style(p.accent),
-                    text(&r.note).size(14).style(p.text_secondary),
+                    text(&r.note).size(14).style(p.text_secondary).width(Length::Fill),
                     vertical_space().height(8),
                     row![
                         button(text("Template").size(12))
@@ -1031,7 +1035,9 @@ impl Fisha {
                 ]
                 .spacing(4)
                 .padding(16)
+                .width(Length::Fill)
             )
+            .width(Length::Fill)
             .style(iced::theme::Container::Custom(Box::new(ContainerStyle(p, ContainerKind::Card))))
             .into()
         }).collect();
@@ -1050,12 +1056,13 @@ impl Fisha {
                 vertical_space().height(16),
                 text(results_text).size(12).style(p.text_muted),
                 horizontal_rule(1).style(iced::theme::Rule::Custom(Box::new(RuleStyle(p)))),
-                scrollable(Column::with_children(results).spacing(12).padding(8))
+                scrollable(Column::with_children(results).spacing(12).padding([8, 12, 8, 8]).width(Length::Fill))
                     .height(Length::Fill)
                     .style(iced::theme::Scrollable::Custom(Box::new(ScrollStyle(p)))),
             ]
             .spacing(8)
             .padding(24)
+            .width(Length::Fill)
         )
         .width(Length::Fill)
         .height(Length::Fill)
