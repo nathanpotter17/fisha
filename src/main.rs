@@ -1,3 +1,4 @@
+#![windows_subsystem = "windows"]
 use iced::widget::{
     button, column, container, horizontal_rule, horizontal_space, pick_list, row, scrollable,
     text, text_input, vertical_space, Column,
