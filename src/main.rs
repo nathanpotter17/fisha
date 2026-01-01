@@ -3,7 +3,7 @@ use iced::widget::{
     button, column, container, horizontal_rule, horizontal_space, pick_list, row, scrollable,
     text, text_input, vertical_space, Column,
 };
-use iced::{executor, Application, Background, Border, Color, Command, Element, Length, Settings, Theme};
+use iced::{executor, keyboard, Application, Background, Border, Color, Command, Element, Length, Settings, Subscription, Theme};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
@@ -73,6 +73,49 @@ struct Stats {
     subcategories: usize,
     concepts: usize,
     notes: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct SearchOptions {
+    case_sensitive: bool,
+    exact_match: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FormField {
+    Category,
+    Subcategory,
+    Concept,
+    Note,
+}
+
+impl FormField {
+    fn next(self) -> Self {
+        match self {
+            Self::Category => Self::Subcategory,
+            Self::Subcategory => Self::Concept,
+            Self::Concept => Self::Note,
+            Self::Note => Self::Category,
+        }
+    }
+    
+    fn prev(self) -> Self {
+        match self {
+            Self::Category => Self::Note,
+            Self::Subcategory => Self::Category,
+            Self::Concept => Self::Subcategory,
+            Self::Note => Self::Concept,
+        }
+    }
+    
+    fn input_id(self) -> text_input::Id {
+        match self {
+            Self::Category => input_id_category(),
+            Self::Subcategory => input_id_subcategory(),
+            Self::Concept => input_id_concept(),
+            Self::Note => input_id_note(),
+        }
+    }
 }
 
 impl Microfiche {
@@ -145,37 +188,63 @@ impl Microfiche {
         true
     }
 
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        let query_lower = query.to_lowercase();
-        let parts: Vec<&str> = query_lower.split_whitespace().collect();
-        
-        if parts.is_empty() {
+    fn search(&self, query: &str, options: SearchOptions) -> Vec<SearchResult> {
+        if query.trim().is_empty() {
             return Vec::new();
         }
         
         let mut results = Vec::with_capacity(100);
+        
+        // Prepare query based on options
+        let query_prepared = if options.case_sensitive {
+            query.to_string()
+        } else {
+            query.to_lowercase()
+        };
+        
+        let parts: Vec<&str> = query_prepared.split_whitespace().collect();
+        if parts.is_empty() {
+            return Vec::new();
+        }
+        
         let query_joined = parts.join(" ");
         
         for (cat_name, category) in &self.categories {
-            let cat_lower = cat_name.to_lowercase();
+            let cat_cmp = if options.case_sensitive { cat_name.clone() } else { cat_name.to_lowercase() };
             
             for subcat in &category.subcategories {
-                let sub_lower = subcat.name.to_lowercase();
+                let sub_cmp = if options.case_sensitive { subcat.name.clone() } else { subcat.name.to_lowercase() };
                 
                 for concept in &subcat.concepts {
-                    let con_lower = concept.name.to_lowercase();
+                    let con_cmp = if options.case_sensitive { concept.name.clone() } else { concept.name.to_lowercase() };
                     
                     for note in &concept.notes {
-                        let note_lower = note.to_lowercase();
+                        let note_cmp = if options.case_sensitive { note.clone() } else { note.to_lowercase() };
                         
-                        let all_match = parts.iter().all(|part| {
-                            cat_lower.contains(part) 
-                                || sub_lower.contains(part) 
-                                || con_lower.contains(part) 
-                                || note_lower.contains(part)
-                        });
+                        let matches = if options.exact_match {
+                            // Exact match: the query must match exactly one of the fields
+                            // or be contained as a complete word/phrase
+                            cat_cmp == query_joined 
+                                || sub_cmp == query_joined 
+                                || con_cmp == query_joined
+                                || note_cmp == query_joined
+                                || contains_exact_phrase(&cat_cmp, &query_joined)
+                                || contains_exact_phrase(&sub_cmp, &query_joined)
+                                || contains_exact_phrase(&con_cmp, &query_joined)
+                                || contains_exact_phrase(&note_cmp, &query_joined)
+                        } else {
+                            // Fuzzy match: all parts must be found somewhere
+                            let all_match = parts.iter().all(|part| {
+                                cat_cmp.contains(part) 
+                                    || sub_cmp.contains(part) 
+                                    || con_cmp.contains(part) 
+                                    || note_cmp.contains(part)
+                            });
+                            
+                            all_match || cat_cmp == query_joined || sub_cmp == query_joined || con_cmp == query_joined
+                        };
                         
-                        if all_match || cat_lower == query_joined || sub_lower == query_joined || con_lower == query_joined {
+                        if matches {
                             results.push(SearchResult {
                                 category: cat_name.clone(),
                                 subcategory: subcat.name.clone(),
@@ -211,6 +280,18 @@ impl Microfiche {
         let mut names: Vec<_> = self.categories.keys().cloned().collect();
         names.sort();
         names
+    }
+}
+
+/// Check if text contains the phrase as a complete word/phrase (bounded by word boundaries)
+fn contains_exact_phrase(text: &str, phrase: &str) -> bool {
+    if let Some(pos) = text.find(phrase) {
+        let before_ok = pos == 0 || !text.chars().nth(pos - 1).map(|c| c.is_alphanumeric()).unwrap_or(false);
+        let after_pos = pos + phrase.len();
+        let after_ok = after_pos >= text.len() || !text.chars().nth(after_pos).map(|c| c.is_alphanumeric()).unwrap_or(false);
+        before_ok && after_ok
+    } else {
+        false
     }
 }
 
@@ -379,6 +460,7 @@ enum ButtonKind {
     Nav(bool), 
     Danger, 
     ListItem(bool),
+    Toggle(bool),  // New: for toggle buttons
 }
 
 impl button::StyleSheet for ButtonStyle {
@@ -396,6 +478,10 @@ impl button::StyleSheet for ButtonStyle {
             ButtonKind::ListItem(sel) => {
                 if sel { (p.surface_hover, p.text_primary, Color::TRANSPARENT, 0.0) }
                 else { (Color::TRANSPARENT, p.text_secondary, Color::TRANSPARENT, 0.0) }
+            },
+            ButtonKind::Toggle(active) => {
+                if active { (alpha(p.accent, 0.3), p.accent, p.accent, 1.0) }
+                else { (Color::TRANSPARENT, p.text_muted, p.border, 1.0) }
             },
         };
         button::Appearance {
@@ -417,6 +503,10 @@ impl button::StyleSheet for ButtonStyle {
             },
             ButtonKind::Danger => (alpha(p.error, 0.2), p.error, p.error, 1.0),
             ButtonKind::ListItem(_) => (p.surface_hover, p.text_primary, Color::TRANSPARENT, 0.0),
+            ButtonKind::Toggle(active) => {
+                if active { (alpha(p.accent, 0.4), p.accent, p.accent, 1.0) }
+                else { (p.surface_hover, p.text_primary, p.accent, 1.0) }
+            },
         };
         button::Appearance {
             background: Some(Background::Color(bg)),
@@ -535,6 +625,30 @@ impl iced::widget::rule::StyleSheet for RuleStyle {
 }
 
 // ============================================================================
+// Text Input IDs for Tab Navigation
+// ============================================================================
+
+fn input_id_category() -> text_input::Id {
+    text_input::Id::new("form_category")
+}
+
+fn input_id_subcategory() -> text_input::Id {
+    text_input::Id::new("form_subcategory")
+}
+
+fn input_id_concept() -> text_input::Id {
+    text_input::Id::new("form_concept")
+}
+
+fn input_id_note() -> text_input::Id {
+    text_input::Id::new("form_note")
+}
+
+fn input_id_search() -> text_input::Id {
+    text_input::Id::new("search_query")
+}
+
+// ============================================================================
 // Application
 // ============================================================================
 
@@ -548,8 +662,12 @@ enum Message {
     SetViewMode(ViewMode), SetTheme(FishaTheme),
     SelectCategory(String), SelectSubcategory(String),
     SearchQueryChanged(String),
+    ToggleCaseSensitive,
+    ToggleExactMatch,
     FormCategoryChanged(String), FormSubcategoryChanged(String),
     FormConceptChanged(String), FormNoteChanged(String),
+    FormFieldFocused(FormField),
+    TabPressed { shift: bool },
     SubmitEntry, ClearForm,
     DeleteNote { category: String, subcategory: String, concept: String, note: String },
     EditNote { category: String, subcategory: String, concept: String, note: String },
@@ -564,11 +682,13 @@ struct Fisha {
     selected_category: Option<String>,
     selected_subcategory: Option<String>,
     search_query: String,
+    search_options: SearchOptions,
     search_results: Vec<SearchResult>,
     form_category: String,
     form_subcategory: String,
     form_concept: String,
     form_note: String,
+    focused_field: FormField,
     status_message: String,
 }
 
@@ -587,11 +707,13 @@ impl Application for Fisha {
             selected_category: None,
             selected_subcategory: None,
             search_query: String::new(),
+            search_options: SearchOptions::default(),
             search_results: Vec::new(),
             form_category: String::new(),
             form_subcategory: String::new(),
             form_concept: String::new(),
             form_note: String::new(),
+            focused_field: FormField::Category,
             status_message: String::new(),
         }, Command::none())
     }
@@ -640,7 +762,18 @@ impl Application for Fisha {
                 self.status_message = format!("Saved: {}", p); 
             }
             Message::FileSaved(Err(e)) => if e != "Cancelled" { self.status_message = e; },
-            Message::SetViewMode(m) => self.view_mode = m,
+            Message::SetViewMode(m) => {
+                self.view_mode = m;
+                // Focus appropriate input when switching views
+                match m {
+                    ViewMode::Create => {
+                        self.focused_field = FormField::Category;
+                        return text_input::focus(input_id_category());
+                    }
+                    ViewMode::Search => return text_input::focus(input_id_search()),
+                    _ => {}
+                }
+            }
             Message::SetTheme(t) => self.theme = t,
             Message::SelectCategory(c) => { 
                 self.selected_category = Some(c); 
@@ -649,12 +782,47 @@ impl Application for Fisha {
             Message::SelectSubcategory(s) => self.selected_subcategory = Some(s),
             Message::SearchQueryChanged(q) => { 
                 self.search_query = q; 
-                self.search_results = self.microfiche.search(&self.search_query); 
+                self.search_results = self.microfiche.search(&self.search_query, self.search_options); 
             }
-            Message::FormCategoryChanged(v) => self.form_category = v,
-            Message::FormSubcategoryChanged(v) => self.form_subcategory = v,
-            Message::FormConceptChanged(v) => self.form_concept = v,
-            Message::FormNoteChanged(v) => self.form_note = v,
+            Message::ToggleCaseSensitive => {
+                self.search_options.case_sensitive = !self.search_options.case_sensitive;
+                self.search_results = self.microfiche.search(&self.search_query, self.search_options);
+            }
+            Message::ToggleExactMatch => {
+                self.search_options.exact_match = !self.search_options.exact_match;
+                self.search_results = self.microfiche.search(&self.search_query, self.search_options);
+            }
+            Message::FormCategoryChanged(v) => {
+                self.form_category = v;
+                self.focused_field = FormField::Category;
+            }
+            Message::FormSubcategoryChanged(v) => {
+                self.form_subcategory = v;
+                self.focused_field = FormField::Subcategory;
+            }
+            Message::FormConceptChanged(v) => {
+                self.form_concept = v;
+                self.focused_field = FormField::Concept;
+            }
+            Message::FormNoteChanged(v) => {
+                self.form_note = v;
+                self.focused_field = FormField::Note;
+            }
+            Message::FormFieldFocused(field) => {
+                self.focused_field = field;
+            }
+            Message::TabPressed { shift } => {
+                // Only handle tab in Create view
+                if self.view_mode == ViewMode::Create {
+                    let next_field = if shift {
+                        self.focused_field.prev()
+                    } else {
+                        self.focused_field.next()
+                    };
+                    self.focused_field = next_field;
+                    return text_input::focus(next_field.input_id());
+                }
+            }
             Message::SubmitEntry => {
                 if self.form_category.is_empty() || self.form_subcategory.is_empty() 
                     || self.form_concept.is_empty() || self.form_note.trim().is_empty() 
@@ -672,19 +840,24 @@ impl Application for Fisha {
                     self.form_subcategory.clear(); 
                     self.form_concept.clear(); 
                     self.form_note.clear();
+                    // Focus back to category field for next entry
+                    self.focused_field = FormField::Category;
+                    return text_input::focus(input_id_category());
                 }
             }
             Message::ClearForm => { 
                 self.form_category.clear(); 
                 self.form_subcategory.clear(); 
                 self.form_concept.clear(); 
-                self.form_note.clear(); 
+                self.form_note.clear();
+                self.focused_field = FormField::Category;
+                return text_input::focus(input_id_category());
             }
             Message::DeleteNote { category, subcategory, concept, note } => {
                 if self.microfiche.delete_note(&category, &subcategory, &concept, &note) {
                     self.status_message = "Deleted".into();
                     if self.view_mode == ViewMode::Search { 
-                        self.search_results = self.microfiche.search(&self.search_query); 
+                        self.search_results = self.microfiche.search(&self.search_query, self.search_options); 
                     }
                     if !self.microfiche.categories.contains_key(&category) { 
                         self.selected_category = None; 
@@ -700,6 +873,8 @@ impl Application for Fisha {
                     self.form_note = note;
                     self.view_mode = ViewMode::Create;
                     self.status_message = "Edit and submit".into();
+                    self.focused_field = FormField::Note;
+                    return text_input::focus(input_id_note());
                 }
             }
             Message::UseAsTemplate { category, subcategory, concept } => {
@@ -709,6 +884,8 @@ impl Application for Fisha {
                 self.form_note.clear();
                 self.view_mode = ViewMode::Create;
                 self.status_message = "Template loaded".into();
+                self.focused_field = FormField::Note;
+                return text_input::focus(input_id_note());
             }
         }
         Command::none()
@@ -735,6 +912,17 @@ impl Application for Fisha {
             .height(Length::Fill)
             .style(iced::theme::Container::Custom(Box::new(ContainerStyle(p, ContainerKind::Background))))
             .into()
+    }
+    
+    fn subscription(&self) -> Subscription<Message> {
+        keyboard::on_key_press(|key, modifiers| {
+            match key.as_ref() {
+                keyboard::Key::Named(keyboard::key::Named::Tab) => {
+                    Some(Message::TabPressed { shift: modifiers.shift() })
+                }
+                _ => None,
+            }
+        })
     }
 }
 
@@ -808,6 +996,8 @@ impl Fisha {
                     stats.categories, stats.subcategories, stats.concepts, stats.notes
                 )).size(12).style(p.text_muted),
                 horizontal_space(),
+                text(&self.status_message).size(12).style(p.accent),
+                horizontal_space().width(16),
                 text(self.theme.name()).size(12).style(p.text_muted),
             ]
             .spacing(8)
@@ -1044,17 +1234,47 @@ impl Fisha {
         
         let results_text = format!("Found {} results", self.search_results.len());
         
+        // Search options description
+        let options_desc = match (self.search_options.case_sensitive, self.search_options.exact_match) {
+            (false, false) => "Case insensitive, fuzzy match",
+            (true, false) => "Case sensitive, fuzzy match",
+            (false, true) => "Case insensitive, exact match",
+            (true, true) => "Case sensitive, exact match",
+        };
+        
         container(
             column![
                 text("Search").size(24).style(p.text_primary),
                 vertical_space().height(16),
-                text_input("Search...", &self.search_query)
-                    .on_input(Message::SearchQueryChanged)
-                    .padding(12)
-                    .size(14)
-                    .style(iced::theme::TextInput::Custom(Box::new(InputStyle(p)))),
-                vertical_space().height(16),
-                text(results_text).size(12).style(p.text_muted),
+                row![
+                    text_input("Search...", &self.search_query)
+                        .id(input_id_search())
+                        .on_input(Message::SearchQueryChanged)
+                        .padding(12)
+                        .size(14)
+                        .width(Length::Fill)
+                        .style(iced::theme::TextInput::Custom(Box::new(InputStyle(p)))),
+                    horizontal_space().width(8),
+                    button(text("Aa").size(14))
+                        .on_press(Message::ToggleCaseSensitive)
+                        .padding([10, 14])
+                        .style(iced::theme::Button::Custom(Box::new(
+                            ButtonStyle(p, ButtonKind::Toggle(self.search_options.case_sensitive))
+                        ))),
+                    horizontal_space().width(4),
+                    button(text("ab").size(14))
+                        .on_press(Message::ToggleExactMatch)
+                        .padding([10, 14])
+                        .style(iced::theme::Button::Custom(Box::new(
+                            ButtonStyle(p, ButtonKind::Toggle(self.search_options.exact_match))
+                        ))),
+                ].align_items(iced::Alignment::Center),
+                vertical_space().height(8),
+                row![
+                    text(results_text).size(12).style(p.text_muted),
+                    horizontal_space().width(16),
+                    text(options_desc).size(12).style(p.text_muted),
+                ],
                 horizontal_rule(1).style(iced::theme::Rule::Custom(Box::new(RuleStyle(p)))),
                 scrollable(Column::with_children(results).spacing(12).padding([8, 12, 8, 8]).width(Length::Fill))
                     .height(Length::Fill)
@@ -1073,23 +1293,16 @@ impl Fisha {
     fn view_create(&self) -> Element<Message> {
         let p = self.theme.palette();
         
-        let field = |label: &str, placeholder: &str, val: &str, msg: fn(String) -> Message| -> Element<Message> {
-            column![
-                text(label).size(12).style(p.text_muted),
-                text_input(placeholder, val)
-                    .on_input(msg)
-                    .padding(12)
-                    .size(14)
-                    .style(iced::theme::TextInput::Custom(Box::new(InputStyle(p)))),
-            ]
-            .spacing(6)
-            .into()
-        };
-        
         let status_text = if self.status_message.is_empty() { 
             " ".to_string() 
         } else { 
             self.status_message.clone() 
+        };
+        
+        // Helper to show which field is focused
+        let field_label = |label: &str, field: FormField| -> Element<Message> {
+            let style = if self.focused_field == field { p.accent } else { p.text_muted };
+            text(label).size(12).style(style).into()
         };
         
         container(
@@ -1098,11 +1311,56 @@ impl Fisha {
                     column![
                         text("Create New Entry").size(24).style(p.text_primary),
                         text("Add a new note to your knowledge base").size(14).style(p.text_muted),
+                        text("Press Tab to navigate between fields, Shift+Tab to go back").size(12).style(p.text_muted),
                         vertical_space().height(24),
-                        field("Category", "e.g. Programming", &self.form_category, Message::FormCategoryChanged),
-                        field("Subcategory", "e.g. Rust", &self.form_subcategory, Message::FormSubcategoryChanged),
-                        field("Concept", "e.g. Ownership", &self.form_concept, Message::FormConceptChanged),
-                        field("Note", "Your note...", &self.form_note, Message::FormNoteChanged),
+                        // Category field
+                        column![
+                            field_label("Category", FormField::Category),
+                            text_input("e.g. Programming", &self.form_category)
+                                .id(input_id_category())
+                                .on_input(|v| {
+                                    Message::FormCategoryChanged(v)
+                                })
+                                .padding(12)
+                                .size(14)
+                                .style(iced::theme::TextInput::Custom(Box::new(InputStyle(p)))),
+                        ].spacing(6),
+                        // Subcategory field
+                        column![
+                            field_label("Subcategory", FormField::Subcategory),
+                            text_input("e.g. Rust", &self.form_subcategory)
+                                .id(input_id_subcategory())
+                                .on_input(|v| {
+                                    Message::FormSubcategoryChanged(v)
+                                })
+                                .padding(12)
+                                .size(14)
+                                .style(iced::theme::TextInput::Custom(Box::new(InputStyle(p)))),
+                        ].spacing(6),
+                        // Concept field
+                        column![
+                            field_label("Concept", FormField::Concept),
+                            text_input("e.g. Ownership", &self.form_concept)
+                                .id(input_id_concept())
+                                .on_input(|v| {
+                                    Message::FormConceptChanged(v)
+                                })
+                                .padding(12)
+                                .size(14)
+                                .style(iced::theme::TextInput::Custom(Box::new(InputStyle(p)))),
+                        ].spacing(6),
+                        // Note field
+                        column![
+                            field_label("Note", FormField::Note),
+                            text_input("Your note...", &self.form_note)
+                                .id(input_id_note())
+                                .on_input(|v| {
+                                    Message::FormNoteChanged(v)
+                                })
+                                .padding(12)
+                                .size(14)
+                                .style(iced::theme::TextInput::Custom(Box::new(InputStyle(p)))),
+                        ].spacing(6),
                         vertical_space().height(24),
                         row![
                             button(text("Create Entry").size(14))
